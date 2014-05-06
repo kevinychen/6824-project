@@ -1,3 +1,5 @@
+package paxos
+
 //
 // Paxos library, to be included in an application.
 // Multiple applications will run, each including
@@ -25,6 +27,7 @@ import "os"
 import "syscall"
 import "sync"
 import "fmt"
+import "math"
 import "math/rand"
 
 type Paxos struct {
@@ -36,49 +39,56 @@ type Paxos struct {
   peers []string
   me int // index into peers[]
 
+  // start added fields
+  instances map[int]*Instance // keep track of Paxos instances at different seq
+  max int // keep track of 
+  majority int
+  peersDone []int // needed to decide what memory to free 
+}
 
-  // Your data here
-  acceptors map[int]Acceptor
-  statuses map[int]Status
-  max int
-  min int
-  peersDone []int
+type ProposalNum struct {
+  Hi int
+  Low int // possibly better used - currently like a convenient hack 
+}
+
+type Instance struct {
+  mu sync.Mutex // allow for fine-grained locking on each Paxos instance 
+
+  proposer Proposer  
+  acceptor Acceptor
+}
+
+type Proposer struct {
+  decided bool
+  decidedVal interface{}
+  highNum ProposalNum
 }
 
 type Acceptor struct {
-  PrepareNum int
-  AcceptNum int
-  AcceptVal interface{}
-}
-
-type Status struct {
-  value interface{}
-  done bool
+  prepareNum ProposalNum
+  acceptNum ProposalNum
+  acceptVal interface{}
 }
 
 type PrepareArgs struct {
   Seq int
-  Prop int
-  //UID string	
+  Prop ProposalNum
 }
 
 type AcceptArgs struct {
   Seq int
-  Prop int
+  Prop ProposalNum
   Value interface{}
-  //UID string
 }
 
 type PrepareReply struct {
-  HighPrepare int
-  HighProposal int
+  Prop ProposalNum
   Value interface{}
-  OK bool
-  //FromUID string 
+  Ok bool
 }
 
 type AcceptReply struct {
-  OK bool
+  Ok bool
 }
 
 type DecideArgs struct {
@@ -89,7 +99,7 @@ type DecideArgs struct {
 }
 
 type DecideReply struct {
-  OK bool
+  MaxSeq int
 }
 
 //
@@ -128,93 +138,290 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
   return false
 }
 
+//
+// Allocates a Paxos instance with default parameters such that they can 
+// be overwritten cleanly when the protocol is executed.
+//
+func MakeInstance() *Instance {
+  inst := &Instance{}
+
+  inst.proposer = Proposer{decided: false, highNum: ProposalNum{-1, -1}}
+  inst.acceptor = Acceptor{prepareNum: ProposalNum{-1, -1}, acceptNum: ProposalNum{-1, -1}, acceptVal: nil}
+
+  return inst
+}
+
+//
+// A comparator for the ProposalNum class; these comparisons are frequent
+// so the comparator is helpful.
+//
+func ProposalComp(a ProposalNum, b ProposalNum) bool {
+  if a.Hi > b.Hi {
+    return true
+  } else if a.Hi < b.Hi {
+    return false
+  } else {
+    return a.Low > b.Low
+  }
+}
+
+//
+// Gets the reference to the Paxos instance for the given sequence value.
+//
+func (px *Paxos) GetInstance(seq int) *Instance {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+
+  _, ok := px.instances[seq]
+  if !ok {
+    px.instances[seq] = MakeInstance()
+  }
+  return px.instances[seq]
+}
+
+//
+// Updates the local array holding the machine's perspective of other 
+// machines' finished Paxos instances. If the value is higher than 
+// previously known, it is replaced, and the information used for 
+// freeing memory.
+//
+func (px *Paxos) MergePeersDone(doneVal int, sender int) {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+
+  if doneVal > px.peersDone[sender] {
+    px.peersDone[sender] = doneVal
+  }
+}
+
+//
+// A wrapper for call that ensures that RPCs aren't sent over 
+// the network to the machine sending them - instead, the operations
+// are just called locally.
+//
+func (px *Paxos) MyCall(srv string, name string, args interface{}, reply interface{}) bool {
+  var err error
+
+  if srv == px.peers[px.me] {
+    if name == "Paxos.Prepare" {
+      prepareArgs := args.(PrepareArgs)
+      prepareReply := reply.(*PrepareReply)
+      err = px.Prepare(&prepareArgs, prepareReply)
+    } else if name == "Paxos.Accept" {
+      acceptArgs := args.(AcceptArgs)
+      acceptReply := reply.(*AcceptReply)
+      err = px.Accept(&acceptArgs, acceptReply)
+    } else if name == "Paxos.Decide" {
+      decideArgs := args.(DecideArgs)
+      decideReply := reply.(*DecideReply)
+      err = px.Decide(&decideArgs, decideReply)
+    } else {
+        return false
+    }
+    if err == nil {
+        return true
+    }
+
+    fmt.Println(err)
+    return false
+  } else {
+    result := call(srv, name, args, reply)
+    return result
+  }
+}
+
+//
+// The RPC handler for Prepare requests. The receiver checks if the 
+// proposal number is greater than any received, and if so replaces 
+// it, and sends the highest accepted proposal number and corresponding
+// value back. 
+//
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  px.mu.Lock()
-  defer px.mu.Unlock()
-
-  state, ok := px.acceptors[args.Seq]
-  if args.Seq > px.max {
-      px.max = args.Seq
-  }
-  if args.Seq >= px.min {
-      if ok {
-          reply.HighPrepare = state.PrepareNum
-          reply.HighProposal = state.AcceptNum
-          reply.Value = state.AcceptVal
-          if args.Prop <= state.PrepareNum {
-              reply.OK = false
-          } else {
-              px.acceptors[args.Seq] = Acceptor{args.Prop, state.AcceptNum, state.AcceptVal}
-              reply.OK = true
-          }
-      } else {
-          px.acceptors[args.Seq] = Acceptor{args.Prop, 0, nil}
-          reply.HighPrepare = 0
-          reply.HighProposal = 0
-          reply.Value = nil
-          reply.OK = true
-      }
-  }
-  return nil
-}
-
-func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
-    px.mu.Lock()
-    defer px.mu.Unlock()
-
-    if args.Seq > px.max {
-        px.max = args.Seq
-    }
-    if args.Seq >= px.min {
-        state, ok := px.acceptors[args.Seq]
-        if args.Prop < state.PrepareNum && ok {
-            reply.OK = false
-        } else {
-            px.acceptors[args.Seq] = Acceptor{args.Prop, args.Prop, args.Value}
-            reply.OK = true
-        }
-    }
+  // no longer in memory
+  if args.Seq < px.Min() {
     return nil
-}
-
-func (px *Paxos) Decide(args *DecideArgs, reply *DecideReply) error {
-  px.mu.Lock()
-  defer px.mu.Unlock()
-
-  if args.Seq >= px.min {
-      px.statuses[args.Seq] = Status{args.Value, true}
   }
 
-  if args.Seq > px.max {
-      px.max = args.Seq
+  inst := px.GetInstance(args.Seq) // locked (also)
+  inst.mu.Lock() // the instance fields should not be concurrently accessed
+  if ProposalComp(args.Prop, inst.acceptor.prepareNum) {
+    inst.acceptor.prepareNum = args.Prop
+    reply.Prop = inst.acceptor.acceptNum
+    reply.Value = inst.acceptor.acceptVal
+    reply.Ok = true
+  } else {
+    reply.Ok = false
   }
-  px.peersDone[args.Me] = args.MaxSeq
+  inst.mu.Unlock()
 
-  reply.OK = true
-
-  min := 0
-  if len(px.peersDone) > 0 {
-      min = px.peersDone[0]
-      for i := 1; i < len(px.peersDone); i++ {
-          if px.peersDone[i] < min {
-              min = px.peersDone[i]
-          }
-      }
-  }
-  px.min = min + 1
-  for key, _ := range px.statuses {
-    if key < px.min {
-        delete(px.statuses, key)
-    }
-  }
-  for key, _ := range px.acceptors {
-    if key < px.min {
-        delete(px.acceptors, key)
-    }
-  }
   return nil
 }
 
+//
+// The RPC handler for Accept requests. The receiver checks if the proposal 
+// number is greater or equal than any seen, and replaces the accepted proposal  
+// fields if so.
+//
+func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
+  if args.Seq < px.Min() {
+    return nil
+  }
+
+  inst := px.GetInstance(args.Seq) // locked (also)
+  inst.mu.Lock() // the instance fields should not be concurrently accessed 
+  if ProposalComp(args.Prop, inst.acceptor.prepareNum) || args.Prop == inst.acceptor.prepareNum {
+    inst.acceptor.prepareNum = args.Prop
+    inst.acceptor.acceptNum = args.Prop
+    inst.acceptor.acceptVal = args.Value
+    reply.Ok = true
+  } else {
+    reply.Ok = false
+  }
+  inst.mu.Unlock()
+
+  return nil
+}
+
+//
+// The RPC handler for Decide requests. The receiver marks the Paxos instance
+// for the given sequence number as decided and stores the decided value, also
+// updating the array for highest completed sequence numbers. 
+//
+func (px *Paxos) Decide(args *DecideArgs, reply *DecideReply) error {
+  px.MergePeersDone(args.MaxSeq, args.Me)
+  reply.MaxSeq = px.peersDone[px.me]
+
+  if args.Seq < px.Min() {
+    return nil
+  }
+
+  inst := px.GetInstance(args.Seq) // locked
+
+  // IMPORTANT: DO NOT CHANGE v_a! set decidedVal instead
+  inst.mu.Lock() // no concurrent access of instance fields 
+  inst.proposer.decided = true
+  inst.proposer.decidedVal = args.Value
+  inst.mu.Unlock()
+
+  return nil
+}
+
+//
+// Runs the prepare phase for Paxos, passing control to the accept 
+// phase driver if the prepare phase receives a majority of approvals.
+//
+func (px *Paxos) DrivePrepare(seq int, v interface{}) {
+  inst := px.GetInstance(seq)
+  
+  for !inst.proposer.decided && !px.dead {
+    inst.mu.Lock()
+    prop := ProposalNum{inst.proposer.highNum.Hi + 1, px.me}
+    inst.proposer.highNum = prop 
+    inst.mu.Unlock()
+
+    // send Prepare to all peers
+
+    numPrepareOks := 0
+    numPrepareRejects := 0
+    v_prime := v
+    highNum := ProposalNum{-1, -1}
+
+    for i := 0; i < len(px.peers) && !px.dead; i++ {
+      prepareArgs := PrepareArgs{Seq: seq, Prop: prop}
+      prepareReply := PrepareReply{}
+
+      // Lack of response is essentially a rejection
+      if !px.MyCall(px.peers[i], "Paxos.Prepare", prepareArgs, &prepareReply) {
+        prepareReply.Ok = false
+      }
+
+      if prepareReply.Ok {
+        numPrepareOks++
+
+        // keep track of highest prepareOk proposal num and value
+        if ProposalComp(prepareReply.Prop, highNum) {
+          highNum = prepareReply.Prop
+          v_prime = prepareReply.Value
+        }
+
+        // track highest proposal num seen
+        inst.mu.Lock()
+        if ProposalComp(prepareReply.Prop, inst.proposer.highNum) {
+          inst.proposer.highNum = prepareReply.Prop
+        }
+        inst.mu.Unlock()
+      } else {
+        numPrepareRejects = numPrepareRejects + 1
+      }
+
+      // abort early if enough oks or too many rejections
+      if numPrepareOks >= px.majority {
+        break
+      }
+      if numPrepareRejects > len(px.peers) - px.majority {
+        break
+      }
+    }
+
+    // received majority of responses, so go ahead to accept phase
+    if numPrepareOks >= px.majority {
+      px.DriveAccept(seq, prop, v_prime)
+    }
+  }
+}
+
+//
+// Runs the accept phase for Paxos, passing control to the decision notification 
+// phase driver if the accept phase receives a majority of acceptances.
+//
+func (px *Paxos) DriveAccept(seq int, prop ProposalNum, value interface{}) {
+    // send Accept to all peers
+
+    numAcceptOks := 0
+    numAcceptRejects := 0 //haha
+
+    for i := 0; i < len(px.peers) && !px.dead; i++ {
+      acceptArgs := AcceptArgs{Seq: seq, Prop: prop, Value: value}
+      acceptReply := AcceptReply{}
+
+      if !px.MyCall(px.peers[i], "Paxos.Accept", acceptArgs, &acceptReply) {
+        acceptReply.Ok = false
+      }
+
+      if acceptReply.Ok {
+        numAcceptOks = numAcceptOks + 1
+      } else {
+        numAcceptRejects = numAcceptRejects + 1
+      }
+
+      // abort early if enough oks or too many rejections
+      if numAcceptOks >= px.majority {
+        break
+      }
+      if numAcceptRejects > len(px.peers) - px.majority {
+        break
+      }
+    }
+
+    // if majority accepts, send decision messages
+    if numAcceptOks >= px.majority {
+      px.DriveDecide(seq, value)
+    }
+}
+
+//
+// Runs the decision notification phase after acceptances have been obtained.
+//
+func (px *Paxos) DriveDecide(seq int, value interface{}) {
+    for i := 0; i < len(px.peers) && !px.dead; i++ {
+      decideArgs := DecideArgs{Seq: seq, Value: value, Me: px.me, MaxSeq: px.peersDone[px.me]}
+      decideReply := DecideReply{}
+
+      if px.MyCall(px.peers[i], "Paxos.Decide", decideArgs, &decideReply) {
+        px.MergePeersDone(decideReply.MaxSeq, i)
+      }
+    }
+}
 
 //
 // the application wants paxos to start agreement on
@@ -225,94 +432,12 @@ func (px *Paxos) Decide(args *DecideArgs, reply *DecideReply) error {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
   px.mu.Lock()
-  defer px.mu.Unlock()
-
   if seq > px.max {
-      px.max = seq
+    px.max = seq
   }
-  _, started := px.statuses[seq]
-  if seq >= px.min && !started {
-      px.statuses[seq] = Status{nil, false}
-      go func() {
-          // start proposal process
-          maxProp := 0
-          for {
-              px.mu.Lock()
-              decided := px.statuses[seq].done
-              px.mu.Unlock()
+  px.mu.Unlock()
 
-              if px.dead || decided || seq < px.min {
-                  break
-              }
-
-              // start prepare
-              n := maxProp + len(px.peers) - (maxProp % len(px.peers)) + px.me
-              var AcceptVal interface{}
-              prepareConfirms := 0
-              AcceptNum := 0
-
-              for _, peer := range px.peers {
-                  prepareargs := &PrepareArgs{seq, n}
-                  preparereply := &PrepareReply{}
-                  ok := true
-                  if px.peers[px.me] != peer {
-                      ok = call(peer, "Paxos.Prepare", prepareargs, preparereply)
-                  } else {
-                      px.Prepare(prepareargs, preparereply)
-                  }
-                  if ok {
-                      if preparereply.HighPrepare > maxProp {
-                          maxProp = preparereply.HighPrepare
-                      }
-                      if preparereply.OK {
-                          prepareConfirms += 1
-                          if preparereply.HighProposal > AcceptNum {
-                              AcceptNum = preparereply.HighProposal
-                              AcceptVal = preparereply.Value
-                          }
-                      }
-                  }
-              }
-
-              // start accept
-              if prepareConfirms > len(px.peersDone) / 2 {
-                  v_prime := v
-                  acceptConfirms := 0
-                  if AcceptVal != nil {
-                      v_prime = AcceptVal
-                  }
-                  for _, peer := range px.peers {
-                      acceptargs := &AcceptArgs{seq, n, v_prime}
-                      acceptreply := &AcceptReply{}
-                      ok := true
-                      if px.peers[px.me] != peer {
-                          ok = call(peer, "Paxos.Accept", acceptargs, acceptreply)
-                      } else {
-                          px.Accept(acceptargs, acceptreply)
-                      }
-                      if ok && acceptreply.OK {
-                          acceptConfirms += 1
-                      }
-                  }
-                  if acceptConfirms > len(px.peersDone) / 2 {
-                      px.mu.Lock()
-                      MaxSeq := px.peersDone[px.me]
-                      px.mu.Unlock()
-
-                      for _, peer := range px.peers {
-                          decideargs := &DecideArgs{seq, v_prime, px.me, MaxSeq}
-                          decidereply := &DecideReply{}
-                          if px.peers[px.me] != peer {
-                              call(peer, "Paxos.Decide", decideargs, decidereply)
-                          } else {
-                              px.Decide(decideargs, decidereply)
-                          }
-                      }
-                  }
-              }
-         }
-     }()
-  }
+  go px.DrivePrepare(seq, v) // start the Paxos protocol
 }
 
 //
@@ -322,34 +447,12 @@ func (px *Paxos) Start(seq int, v interface{}) {
 // see the comments for Min() for more explanation.
 //
 func (px *Paxos) Done(seq int) {
-  // Your code here.
   px.mu.Lock()
-  defer px.mu.Unlock()
-  px.peersDone[px.me] = seq
-
-  min := 0
-
-  if len(px.peersDone) > 0 {
-      min = px.peersDone[0]
-      for i := 1; i < len(px.peersDone); i++ {
-          if px.peersDone[i] < min {
-              min = px.peersDone[i]
-          }
-     }
+  if seq > px.peersDone[px.me] {
+    px.peersDone[px.me] = seq
   }
-  px.min = min + 1
-
-  for key, _ := range px.acceptors {
-      if key < px.min {
-          delete(px.acceptors, key)
-      }
-  }
-
-  for key, _ := range px.statuses {
-      if key < px.min {
-          delete(px.statuses, key)
-      }
-  }
+  px.mu.Unlock()
+  px.Min() // force memory freeing
 }
 
 //
@@ -358,9 +461,6 @@ func (px *Paxos) Done(seq int) {
 // this peer.
 //
 func (px *Paxos) Max() int {
-  // Your code here.
-  px.mu.Lock()
-  defer px.mu.Unlock()
   return px.max
 }
 
@@ -394,8 +494,22 @@ func (px *Paxos) Max() int {
 // 
 func (px *Paxos) Min() int {
   px.mu.Lock()
-  defer px.mu.Unlock()
-  return px.min
+  minDone := math.MaxInt32
+  for i := 0; i < len(px.peers); i++ {
+    if px.peersDone[i] < minDone {
+      minDone = px.peersDone[i]
+    }
+  }
+  px.mu.Unlock()
+
+  // actually free memory
+  for i := 0; i < (minDone + 1); i++ {
+    px.mu.Lock()
+    delete(px.instances, i)
+    px.mu.Unlock()
+  }
+
+  return (minDone + 1)
 }
 
 //
@@ -406,15 +520,23 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
-  // Your code here.
   px.mu.Lock()
-  defer px.mu.Unlock()
+  inst, ok := px.instances[seq]
+  px.mu.Unlock()
 
-  _, ok := px.statuses[seq]
+  decision := false
+  var decisionVal interface{} = nil
+
   if ok {
-      return px.statuses[seq].done, px.statuses[seq].value
+    inst.mu.Lock()
+    if inst.proposer.decided {
+      decision = true
+      decisionVal = inst.proposer.decidedVal
+    }
+    inst.mu.Unlock()
   }
-  return false, nil
+
+  return decision, decisionVal
 }
 
 
@@ -442,11 +564,10 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 
 
   // Your initialization code here.
-  px.acceptors = make(map[int]Acceptor)
-  px.statuses = make(map[int]Status)
+  px.instances = make(map[int]*Instance)
   px.max = -1
-  px.min = 0
   px.peersDone = make([]int, len(peers))
+  px.majority = len(peers) / 2 + 1
   for i := 0; i < len(peers); i++ {
       px.peersDone[i] = -1
   }
@@ -466,6 +587,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
       log.Fatal("listen error: ", e);
     }
     px.l = l
+
     // please do not change any of the following code,
     // or do anything to subvert it.
 
