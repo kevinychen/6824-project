@@ -1,11 +1,11 @@
 package shardkv
 
-import {
+import (
   "container/list"
   "fmt"
   "sync"
   "time"
-}
+)
 
 //
 // A simple LRU cache implementation which supports
