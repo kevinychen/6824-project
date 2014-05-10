@@ -102,8 +102,8 @@ func (kv *ShardKV) logPaxos() {
   current := 0
   for {
     if kv.horizon > current {
-//      fmt.Printf("Syncing: %d, file: %s\n", current, kv.paxosLogFile)
       appendPaxosLog(kv.paxosLogFile, kv.localLog[current], current)
+      delete(kv.localLog, current)
       current++
     }
     time.Sleep(25 * time.Millisecond)
@@ -119,7 +119,6 @@ func (kv *ShardKV) PollDecidedValue(seq int) Op {
     decided, returnOp := kv.px.Status(seq)
     if decided {
       decidedOp := returnOp.(Op)
-      kv.localLog[seq] = decidedOp
       return decidedOp
     }
     time.Sleep(to)
@@ -262,6 +261,7 @@ func (kv *ShardKV) SyncUntil(seqNum int) {
       kv.px.Start(i, noOp)
     }
     decidedOp := kv.PollDecidedValue(i)
+    kv.localLog[seqNum] = decidedOp
     kv.ApplyOp(decidedOp, i)
   }
   kv.horizon = seqNum

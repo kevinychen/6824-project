@@ -34,9 +34,11 @@ type ShardMaster struct {
 
   configs []Config // indexed by config num
 
+  localLog map[int]Op
   openRequests map[string]int
   horizon int
   maxConfigNum int
+  paxosLogFile string
 }
 
 func nrand() int64 {
@@ -58,6 +60,43 @@ type Op struct {
   Shard int
   Num int
 }
+
+// PERSISTENCE
+func appendPaxosLog(filename string, op Op, seq int) {
+  f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  // sequence
+  _, _ = f.WriteString(fmt.Sprintf("Seq:%d\n", seq))
+  // type
+  _, _ = f.WriteString(fmt.Sprintf("Type:%s\n", op.Type))
+  // ID
+  _, _ = f.WriteString(fmt.Sprintf("ID:%s\n", op.ID))
+  // key
+  _, _ = f.WriteString(fmt.Sprintf("GID:%d\n", op.GID))
+  // servers
+  _, _ = f.WriteString(fmt.Sprintf("Servers:%v\n", op.Servers))
+  // shard
+  _, _ = f.WriteString(fmt.Sprintf("Shard:%d\n", op.Shard))
+  // Num
+  _, _ = f.WriteString(fmt.Sprintf("Num:%d\n", op.Num))
+  f.Close()
+}
+
+func (sm *ShardMaster) logPaxos() {
+  current := 0
+  for {
+    if sm.horizon > current {
+      appendPaxosLog(sm.paxosLogFile, sm.localLog[current], current)
+      current++
+    }
+    time.Sleep(25 * time.Millisecond)
+  }
+}
+
+// END PERSISTENCE
+
 
 // Get Status
 func (sm *ShardMaster) PollDecidedValue(seq int) Op {
@@ -223,6 +262,7 @@ func (sm *ShardMaster) SyncUntil(seqNum int) {
       sm.px.Start(i, noOp)
     }
     decidedOp := sm.PollDecidedValue(i)
+    sm.localLog[seqNum] = decidedOp
     sm.ApplyOp(decidedOp, i)
   }
   sm.horizon = seqNum + 1;
@@ -312,6 +352,7 @@ func StartServer(servers []string, me int) *ShardMaster {
   sm := new(ShardMaster)
   sm.me = me
 
+  sm.localLog = make(map[int]Op)
   sm.configs = make([]Config, 1)
   sm.configs[0].Groups = map[int64][]string{}
 
@@ -323,6 +364,11 @@ func StartServer(servers []string, me int) *ShardMaster {
   rpcs.Register(sm)
 
   sm.px = paxos.Make(servers, me, rpcs)
+
+  sm.paxosLogFile = fmt.Sprintf("logs/sm_paxos_log_%d.log", sm.me)
+  os.Create(sm.paxosLogFile)
+
+  go sm.logPaxos()
 
   os.Remove(servers[me])
   l, e := net.Listen("unix", servers[me]);

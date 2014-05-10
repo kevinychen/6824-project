@@ -30,7 +30,6 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
           t.Fatalf("decided values do not match; seq=%v i=%v v=%v v1=%v",
             seq, i, v, v1)
         }
-        //fmt.Printf("Decided value for step %v for peer %v has value %v\n", seq, i, v1);
         count++
         v = v1
       }
@@ -272,7 +271,6 @@ func TestForget(t *testing.T) {
     for i := 0; i < npaxos; i++ {
       s := pxa[i].Min()
       if s != 1 {
-        fmt.Println(i)
         allok = false
       }
     }
@@ -287,7 +285,7 @@ func TestForget(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 }
-/*
+
 func TestManyForget(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -350,7 +348,7 @@ func TestManyForget(t *testing.T) {
   }
 
   fmt.Printf("  ... Passed\n")
-}*/
+}
 
 //
 // does paxos forgetting actually free the memory?
