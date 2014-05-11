@@ -71,6 +71,9 @@ type ShardKV struct {
   logFile *os.File
   logFilename string
   enc *gob.Encoder
+
+  // cell storage management
+  storage *Storage
 }
 
 type Op struct {
@@ -224,19 +227,24 @@ func (kv *ShardKV) Pull(args *PullArgs, reply *PullReply) error {
     kv.configLock.Unlock()
     time.Sleep(20 * time.Millisecond)
   }
-  reply.ShardMap = make(map[int]map[string]string)
-  for key, value := range kv.snapshots[desiredConfig].shardMap {
-    reply.ShardMap[key] = make(map[string]string)
-    for k2, v2 := range value {
-      reply.ShardMap[key][k2] = v2
-    }
-  }
-  reply.Dedup = make(map[string]ClientReply)
-  for key, value := range kv.snapshots[desiredConfig].dedup {
-    reply.Dedup[key] = ClientReply{Value:value.Value, Err:value.Err,
-    Counter:value.Counter}
-  }
+  reply.ShardMap, reply.Finished = kv.storage.ReadSnapshotDB(desiredConfig, args.Shard, args.Index, args.Cache)
   reply.Err = OK
+  return nil
+}
+
+// Locked
+func (kv *ShardKV) Grab(args *GrabArgs, reply *GrabReply) error {
+  desiredConfig := args.ConfigNum
+  for {
+    kv.configLock.Lock()
+    if kv.configNum > desiredConfig {
+      kv.configLock.Unlock()
+      break
+    }
+    kv.configLock.Unlock()
+    time.Sleep(20 * time.Millisecond)
+  }
+  reply.Dedup = kv.storage.ReadSnapshotDedup(args.ConfigNum)
   return nil
 }
 
@@ -246,28 +254,68 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
     if configNum == 0 {
       return
     }
+    index := 0
+    finished := false
+    cache := true
+    for !finished {
+      servers, ok := kv.configs[configNum].Groups[gid]
+      if ok {
+        for _, srv := range servers {
+          args := &PullArgs{}
+          args.ConfigNum = configNum
+          args.Shard = shard
+          args.Cache = cache
+          args.Index = index
+          reply := new(PullReply)
+          callOk := call(srv, "ShardKV.Pull", args, &reply)
+
+
+          if callOk && reply.Err == OK {
+            
+            if reply.Finished && cache {
+              cache = false
+            } else if reply.Finished && !cache {
+              finished = true
+            }
+            
+            // Pull state over
+            for key, value := range reply.ShardMap {
+              // not necessary due to storage handling
+              // if kv.current.shardMap[shard] == nil {
+              //   kv.current.shardMap[shard] = make(map[string]string)
+              // }
+              kv.storage.Put(key, value, false, shard)
+            }
+            index++
+          }
+        }
+      }
+      time.Sleep(100 * time.Millisecond)
+    }
+    return
+  }
+}
+
+func (kv *ShardKV) AskForDedup(gid int64, configNum int) {
+  for !kv.dead {
+    if configNum == 0 {
+      return
+    }
     servers, ok := kv.configs[configNum].Groups[gid]
     if ok {
       for _, srv := range servers {
-        args := &PullArgs{}
+        args := &GrabArgs{}
         args.ConfigNum = configNum
-        reply := new(PullReply)
-        callOk := call(srv, "ShardKV.Pull", args, &reply)
+        reply := new(GrabReply)
+        callOk := call(srv, "ShardKV.Grab", args, &reply)
         if callOk && reply.Err == OK {
-          // Pull state over
-          for key, value := range reply.ShardMap[shard] {
-            if kv.current.shardMap[shard] == nil {
-              kv.current.shardMap[shard] = make(map[string]string)
-            }
-            kv.current.shardMap[shard][key] = value
-          }
+          // Pull dedup over
           for key, value := range reply.Dedup {
             if value.Counter > kv.current.dedup[key].Counter {
-              kv.current.dedup[key] = ClientReply{Value:value.Value, Err:value.Err, Counter:value.Counter}
+              kv.current.dedup[key] = ClientReply{Value:value.Value, Err:value.Err, Counter: value.Counter}
             }
           }
           return
-        } else {
         }
       }
     }
@@ -279,13 +327,19 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
 func (kv *ShardKV) SyncShards(configNum int) {
   prevConfig := kv.configs[configNum - 1]
   newConfig := kv.configs[configNum]
+  seenGroups := make(map[int64]bool)
   for shard, group := range newConfig.Shards {
     // new shard we don't have
     if group == kv.gid && group != prevConfig.Shards[shard] {
+      // get dedup if not already obtained
+      _, ok := seenGroups[prevConfig.Shards[shard]]
+      if !ok {
+        kv.AskForDedup(prevConfig.Shards[shard], configNum - 1)
+        seenGroups[prevConfig.Shards[shard]] = true
+      }
       kv.AskForShard(prevConfig.Shards[shard], configNum - 1, shard)
     }
   }
-
 }
 
 // Call Under Lock
@@ -332,7 +386,7 @@ func (kv *ShardKV) TakeSnapshot(confignum int) {
   if confignum - kv.configNum != 1 {
     return
   }
-  data := ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}
+  /*data := ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}
   for key, value := range kv.current.shardMap {
     data.shardMap[key] = make(map[string]string)
     for k2, v2 := range value {
@@ -343,9 +397,9 @@ func (kv *ShardKV) TakeSnapshot(confignum int) {
   for key, value := range kv.current.dedup {
     data.dedup[key] = ClientReply{Value:value.Value, Err:value.Err,
     Counter:value.Counter}
-  }
+  }*/
 
-  kv.snapshots[kv.configNum] = data
+  kv.storage.CreateSnapshot(confignum, kv.current.dedup)
   kv.configNum = confignum
 }
 
@@ -373,21 +427,9 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
     return
   }
 
-  if kv.current.shardMap[shardNum] == nil {
-    kv.current.shardMap[shardNum] = make(map[string]string)
-  }
   if op.Type == "Put" {
-    prev := kv.current.shardMap[shardNum][key]
-    // Put hash
-    if doHash {
-      toBeHashed := prev + val
-      hash := strconv.Itoa(int(hash(toBeHashed)))
-      kv.current.shardMap[shardNum][key] = hash
-      kv.results[id] = ClientReply{Value:prev, Err:OK, Counter:counter}
-    } else {
-      kv.current.shardMap[shardNum][key] = val
-      kv.results[id] = ClientReply{Value:prev, Err:OK, Counter:counter}
-    }
+    prev := kv.storage.Put(key, val, doHash, shardNum)
+    kv.results[id] = ClientReply{Value:prev, Err:OK, Counter:counter}
     kv.current.dedup[clientID] = ClientReply{Value:prev, Counter: counter, Err:OK}
   } else if op.Type == "Reconfigure" {
     _, ok := kv.configs[op.Config.Num]
@@ -398,7 +440,7 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
     kv.TakeSnapshot(op.Config.Num)
     kv.SyncShards(op.Config.Num)
   } else {
-    value := kv.current.shardMap[shardNum][key]
+    value := kv.storage.Get(key, shardNum)
     kv.results[id] = ClientReply{Value:value, Err:OK, Counter:counter}
     kv.current.dedup[clientID] = ClientReply{Value:value, Counter: counter, Err:OK}
   }
@@ -492,7 +534,8 @@ func StartServer(gid int64, shardmasters []string,
   kv.horizon = 0
   kv.configNum = -1
   kv.max = 0
-  kv.snapshots = make(map[int]ServerState)
+  kv.storage = MakeStorage(1000000000, "127.0.0.1:27017") // setup cell storage
+
 
   kv.current = ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}
   kv.results = make(map[string]ClientReply)

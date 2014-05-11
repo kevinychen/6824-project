@@ -58,10 +58,11 @@ func (cache *ShardCache) Get(key string) (v string, ok bool) {
   shard := key2shard(key)
   element := cache.table[shard][key]
   if element == nil {
-    return "", false 
+    cache.add(key, value)
+    return "", false
   }
   cache.touch(element)
-  return element.Value.(*entry).value, true 
+  return element.Value.(*entry).value, true
 }
 
 func (cache *ShardCache) Put(key string, value string) {
@@ -222,7 +223,7 @@ func (st *Storage) connectToDiskDB(url string) {
 
 func (st *Storage) DBClear() {
   st.db.RemoveAll(bson.M{})
-  check, _ := st.snapshots.Find(bson.M{}).Count() 
+  check, _ := st.snapshots.Find(bson.M{}).Count()
   if (check > 0) {
     st.snapshots.RemoveAll(bson.M{})
     st.dedupsnaps.RemoveAll(bson.M{})
@@ -257,7 +258,7 @@ func (st *Storage) Get(key string, shardNum int) string {
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
-      ok = false 
+      ok = false
     } else {
       value = result.Value
     }
