@@ -38,6 +38,7 @@ import "math/big"
 import "io/ioutil"
 import "strings"
 
+const LeaderLifetime = 10
 const Debug=0
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -61,6 +62,7 @@ type PrepareArgs struct {
 type PrepareReply struct {
   SeenNumber int64
   SeenValue interface{}
+  SeenPeerId int
   MinSequence int
   Err string
 }
@@ -69,6 +71,7 @@ type AcceptArgs struct {
   SequenceNumber int
   ProposalNumber int64
   ProposalValue interface{}
+  PeerId int
 }
 
 type AcceptReply struct {
@@ -80,6 +83,8 @@ type AcceptReply struct {
 type DecideArgs struct {
   SequenceNumber int
   DecidedValue interface{}
+  PeerId int
+  ProposalNumber int64
 }
 
 type DecideReply struct {
@@ -91,6 +96,8 @@ type Instance struct {
   Seq int
   Decided bool
   Value interface{}
+  Leader int
+  LeaderProposalNum int64
 }
 
 type InstanceState struct {
@@ -98,6 +105,7 @@ type InstanceState struct {
   MaxPn int64
   MaxAn int64
   MaxAv interface{}
+  MaxAPeerId int
 }
 
 type Paxos struct {
@@ -121,6 +129,8 @@ type Paxos struct {
   maxSequenceN int
   minSeqNums []int
   instanceMutex sync.Mutex
+  // multi paxos
+  maxAcceptPeerIds map[int]int
 }
 
 
@@ -203,6 +213,7 @@ func (px *Paxos) loadInstances() {
     px.maxProposalNs[seq] = state.MaxPn
     px.maxAcceptNs[seq] = state.MaxAn
     px.maxAcceptVs[seq] = state.MaxAv
+    px.maxAcceptPeerIds[seq] = state.MaxAPeerId
   }
 }
 
@@ -271,7 +282,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
     return false
   }
   defer c.Close()
-    
+
   err = c.Call(name, args, reply)
   if err == nil {
     return true
@@ -294,6 +305,7 @@ func (px *Paxos) freeInstances(minNum int) {
       delete(px.maxProposalNs, k)
       delete(px.maxAcceptNs, k)
       delete(px.maxAcceptVs, k)
+      delete(px.maxAcceptPeerIds, k)
     }
   }
 }
@@ -310,13 +322,14 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
     px.maxProposalNs[seq] = proposalNumber
     reply.SeenNumber = px.maxAcceptNs[seq]
     reply.SeenValue = px.maxAcceptVs[seq]
+    reply.SeenPeerId = px.maxAcceptPeerIds[seq]
   } else {
     reply.Err = "PREPARE_REJECT"
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
-    px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
+  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq],
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq], px.maxAcceptPeerIds[seq]})
   return reply
 }
 
@@ -332,6 +345,7 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
   proposalNumber := args.ProposalNumber
   proposalValue := args.ProposalValue
   seq := args.SequenceNumber
+  peerId := args.PeerId
   reply := new(AcceptReply)
 
   px.mu.Lock()
@@ -340,14 +354,15 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
     px.maxProposalNs[seq] = proposalNumber
     px.maxAcceptNs[seq] = proposalNumber
     px.maxAcceptVs[seq] = proposalValue
+    px.maxAcceptPeerIds[seq] = peerId
     reply.SeenNumber = px.maxProposalNs[seq]
   } else {
     reply.Err = "ACCEPT_REJECT"
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
-    px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
+  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq],
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq], px.maxAcceptPeerIds[seq]})
   return reply
 }
 
@@ -367,7 +382,8 @@ func (px *Paxos) doDecide(args *DecideArgs) *DecideReply {
   reply := new(DecideReply)
   reply.MinSequence = px.minSeqNums[px.me]
 
-  instance := Instance{sequenceNumber, true, value}
+  instance := Instance{Seq: sequenceNumber, Decided: true,
+    Value: value, Leader: args.PeerId, LeaderProposalNum: args.ProposalNumber}
   // Persist decision
   px.logDecision(sequenceNumber, instance)
 
@@ -392,15 +408,28 @@ func (px *Paxos) atomicSequenceNumUpdate(seq int, peer int) {
 
 // Proposer
 func (px *Paxos) doPropose(seq int, v interface{}) {
+  remainder := seq % LeaderLifetime // seq - remainder is index of last election round
+  leader := -1 // id of leader
+  retry := false // true if skipping the prepare phase failed the first time
+
+  // Leader is the winner of the last election round if it finished
+  if px.instances[seq - remainder].Decided {
+    leader = px.instances[seq - remainder].Leader
+  }
+
   // While not decided, keep proposing!
-  for px.dead == false {
+  for !px.instances[seq].Decided && px.dead == false {
     proposalNum := px.getProposalNumber()
+    // Use old proposal number for leader on the first attempt
+    if px.me == leader && !retry {
+      proposalNum = px.instances[seq - remainder].LeaderProposalNum
+    }
     maxSeenN := int64(0)
     maxSeenV := v
+    maxSeenPeerId := px.me
     prepareCount := 0
     numPeers := len(px.peers)
 
-    
     px.mu.Lock()
     _, ok := px.instances[seq]
     if ok {
@@ -409,39 +438,50 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
     }
     px.mu.Unlock()
 
-    for i, _ := range px.peers {
-      var ok bool
-      reply := new(PrepareReply)
-      args := new(PrepareArgs)
-      *args = PrepareArgs{SequenceNumber: seq, ProposalNumber: proposalNum}
-      // Send prepares
-      if i == px.me {
-        ok = true // local call had better return
-        reply = px.doPrepare(args)
-      } else {
-        ok = call(px.peers[i], "Paxos.Prepare", args, reply)
-      }
-
-      if ok && reply.Err == "" {
-        px.atomicSequenceNumUpdate(reply.MinSequence, i)
-        if reply.SeenNumber > maxSeenN {
-          maxSeenN = reply.SeenNumber
-          maxSeenV = reply.SeenValue
+    /* Do prepare phase if we are
+     * 1. not the leader
+     * 2. in an election round
+     * 3. past the first attempt
+     */
+    if !(px.me == leader) || seq % LeaderLifetime == 0 || retry {
+      for i, _ := range px.peers {
+        var ok bool
+        reply := new(PrepareReply)
+        args := new(PrepareArgs)
+        *args = PrepareArgs{SequenceNumber: seq, ProposalNumber: proposalNum}
+        // Send prepares
+        if i == px.me {
+          ok = true // local call had better return
+          reply = px.doPrepare(args)
+        } else {
+          ok = call(px.peers[i], "Paxos.Prepare", args, reply)
         }
-        prepareCount++
+
+        if ok && reply.Err == "" {
+          px.atomicSequenceNumUpdate(reply.MinSequence, i)
+          if reply.SeenNumber > maxSeenN {
+            maxSeenN = reply.SeenNumber
+            maxSeenV = reply.SeenValue
+            maxSeenPeerId = reply.SeenPeerId
+          }
+          prepareCount++
+        }
       }
     }
 
 
-    // If majority ok
-    if prepareCount * 2 > numPeers {
+    /* Do accept phase if we are
+     * 1. leader and first attempt
+     * 2. majority of prepares
+     */
+    if (px.me == leader && !retry) || prepareCount * 2 > numPeers {
       acceptCount := 0
       for i, _ := range px.peers {
         var ok bool
         reply := new(AcceptReply)
         args := new(AcceptArgs)
         *args = AcceptArgs{SequenceNumber: seq, ProposalNumber: proposalNum,
-          ProposalValue: maxSeenV}
+          ProposalValue: maxSeenV, PeerId: maxSeenPeerId}
         // Send accepts
         if i == px.me {
           ok = true
@@ -455,12 +495,12 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
           acceptCount++
         }
       }
-      
 
       if acceptCount * 2 > numPeers {
         // Send decides
         decideReply := new(DecideReply)
-        decideArgs := &DecideArgs{SequenceNumber: seq, DecidedValue: maxSeenV}
+        decideArgs := &DecideArgs{SequenceNumber: seq, DecidedValue: maxSeenV,
+          PeerId: maxSeenPeerId, ProposalNumber: proposalNum}
         for i, _ := range px.peers {
           var ok bool
           if i == px.me {
@@ -478,8 +518,8 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
       }
     }
 
-
     time.Sleep(1000000 * 100)
+    retry = true
   }
 }
 
@@ -566,7 +606,7 @@ func (px *Paxos) Min() int {
   minNum := px.minHelper()
   px.freeInstances(minNum)
   px.mu.Unlock()
-  
+
   return minNum
 }
 
@@ -613,6 +653,7 @@ func (px *Paxos) HardReset() {
   px.maxProposalNs = make(map[int]int64)
   px.maxAcceptNs = make(map[int]int64)
   px.maxAcceptVs = make(map[int]interface{})
+  px.maxAcceptPeerIds = make(map[int]int)
 
   px.maxSequenceN = 0
   for z := 0; z < len(px.peers); z++ {
@@ -645,6 +686,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px.maxAcceptNs = make(map[int]int64)
   px.maxAcceptVs = make(map[int]interface{})
   px.minSeqNums = make([]int, len(peers), len(peers))
+  px.maxAcceptPeerIds = make(map[int]int)
   for z := 0; z < len(peers); z++ {
     px.minSeqNums[z] = -1
   }
@@ -664,10 +706,10 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
       log.Fatal("listen error: ", e);
     }
     px.l = l
-    
+
     // please do not change any of the following code,
     // or do anything to subvert it.
-    
+
     // create a thread to accept RPC connections
     go func() {
       for px.dead == false {
