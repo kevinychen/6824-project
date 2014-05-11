@@ -79,6 +79,8 @@ type Paxos struct {
   rpcCount int
   peers []string
   me int // index into peers[]
+  logDecisionFile string
+  logInstanceFileRoot string
 
 
   // Your data here.
@@ -90,6 +92,31 @@ type Paxos struct {
   minSeqNums []int
   instanceMutex sync.Mutex
 }
+
+// PERSISTENCE
+
+func (px *Paxos) logDecision(seq int, decidedValue interface{}) {
+    filename := fmt.Sprintf("%s.decision.log", px.logDecisionFile)
+    _ = filename
+
+}
+
+func (px *Paxos) logInstance(seq int, maxNp, maxNa int64, maxVa interface{}) {
+    filename := fmt.Sprintf("%s.instance.seq%d.log", px.logInstanceFileRoot, seq)
+    _ = filename
+
+}
+
+// Call under LOCK, puts directly into maps
+func (px *Paxos) loadInstance(seq int) {
+
+}
+
+func (px *Paxos) loadDecision(seq int) interface{} {
+    return nil
+}
+
+// END PERSISTENCE
 
 //
 // call() sends an RPC to the rpcname handler on server srv
@@ -159,6 +186,9 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
     reply.Err = "PREPARE_REJECT"
   }
   reply.MinSequence = px.minSeqNums[px.me]
+  // Persist state
+  px.logInstance(seq, px.maxProposalNs[seq], 
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq])
   // Release acceptor state lock
   px.mu.Unlock()
   return reply
@@ -188,6 +218,9 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
     reply.Err = "ACCEPT_REJECT"
   }
   reply.MinSequence = px.minSeqNums[px.me]
+  // Persist state
+  px.logInstance(seq, px.maxProposalNs[seq], 
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq])
   px.mu.Unlock()
   return reply
 }
@@ -207,6 +240,8 @@ func (px *Paxos) doDecide(args *DecideArgs) *DecideReply {
   value := args.DecidedValue
   reply := new(DecideReply)
   reply.MinSequence = px.minSeqNums[px.me]
+  // Persist decision
+  px.logDecision(sequenceNumber, value)
 
   px.instances[sequenceNumber] = Instance{sequenceNumber, true, value}
   return reply
@@ -438,6 +473,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px := &Paxos{}
   px.peers = peers
   px.me = me
+  fmt.Printf("peers: %v\n", px.peers)
 
 
   // Your initialization code here.
