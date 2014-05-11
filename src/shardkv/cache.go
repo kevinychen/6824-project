@@ -5,9 +5,10 @@ import (
   "sync"
   "time"
   "shardmaster"
-  //"strconv"
+  "strconv"
   "labix.org/v2/mgo"
-  //"labix.org/v2/mgo/bson"
+  "labix.org/v2/mgo/bson"
+  "fmt"
 )
 
 //
@@ -88,7 +89,7 @@ func (cache *ShardCache) Delete(key string) bool {
 
   cache.list.Remove(element)
   delete(cache.table[shard], key)
-  cache.size -= uint64(len(element.Value.(*entry).value) + len(element.Value.(*entry).value))
+  cache.size -= uint64(len(element.Value.(*entry).value) + len(element.Value.(*entry).key))
   return true
 }
 
@@ -203,7 +204,7 @@ type WriteOp struct {
   value string
 }
 
-/*func (st *Storage) makeCache(capacity uint64) {
+func (st *Storage) makeCache(capacity uint64) {
   st.cache = MakeCache(capacity)
 }
 
@@ -213,14 +214,19 @@ func (st *Storage) connectToDiskDB(url string) {
   if err != nil {
     panic(err)
   }
-  db := st.dbSession.DB("db").C("kvstore")
-  snapshots := st.dbSession.DB("db").C("snapshots")
+  st.db = st.dbSession.DB("db").C("kvstore")
+  st.snapshots = st.dbSession.DB("db").C("snapshots")
 }
 
 func MakeStorage(capacity uint64, dbURL string) *Storage {
   st := new(Storage)
   st.makeCache(capacity)
   st.connectToDiskDB(dbURL)
+  st.writeLog = make(map[int]WriteOp)
+
+  fmt.Printf("Making storage...\n")
+
+  go st.writeInBackground()
   return st
 }
 
@@ -228,12 +234,12 @@ func (st *Storage) Get(key string, shardNum int) string {
 
   value, ok := st.cache.Get(key)
   if !ok {
-    result := KVPair{}
-    err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
-    if err != nil {
+    //result := KVPair{}
+    //st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
+    /*if err != nil {
       panic(err)
-    }
-    value = result.value
+    }*/
+    //value = result.value
   }
   return value
 }
@@ -245,12 +251,14 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
-      panic(err)
+      ok = false
+    } else {
+      prev = result.value
+      ok = true
     }
-    prev = result.value
   }
 
-  var deleted *list.List // list of cache values removed to send to disk
+  //var deleted *list.List // list of cache values removed to send to disk
   if doHash {
     toBeHashed := prev + value
     hash := strconv.Itoa(int(hash(toBeHashed)))
@@ -272,9 +280,9 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     if err != nil {
       panic(err)
     }
-  }
+  }*/
   return prev
-}*/
+}
 /*
 func (st *Storage) CreateSnapshot(confignum int) {
   cachedata := st.cache.KVPairs()
@@ -304,7 +312,7 @@ func (st *Storage) ReadSnapshot(confignum int, shardnum int, index int, cache bo
   return piece
 }
 */
-/*func (st *Storage) writeInBackground() {
+func (st *Storage) writeInBackground() {
   current := 0
   for {
     if st.applied > current {
@@ -322,4 +330,4 @@ func (st *Storage) ReadSnapshot(confignum int, shardnum int, index int, cache bo
 
 func (st *Storage) closeDBConnection() {
   st.dbSession.Close() 
-}*/
+}
