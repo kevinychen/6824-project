@@ -383,7 +383,7 @@ func StartServer(servers []string, me int) *ShardMaster {
   go sm.logPaxos()
 
   os.Remove(servers[me])
-  l, e := net.Listen("unix", servers[me]);
+  l, e := net.Listen(Network, servers[me]);
   if e != nil {
     log.Fatal("listen error: ", e);
   }

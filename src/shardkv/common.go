@@ -36,6 +36,14 @@ type SnapshotKV struct {
   Cache bool
 }
 
+type SnapshotDedup struct {
+  Config int
+  Key string
+  Value string
+  Err Err
+  Counter int64
+}
+
 type PutArgs struct {
   Key string
   Value string
