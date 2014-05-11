@@ -121,8 +121,8 @@ func TesterHelper(name string, args SetupArgs) {
         client.Put("a", "x")
         client.Get("a")
         counter++
-        if (j + 1) % 100 == 0 {
-          fmt.Printf("placed operation %d\n", j + 1)
+        if j % 10 == 0 {
+          fmt.Printf("placed operation %d\n", j)
         }
       }
       timeEnd := time.Now().UnixNano()
@@ -170,7 +170,7 @@ func TestSingleClient(t *testing.T) {
     NumReplicas: 3,
     NumClients: 1,
     NumProcesses: 4,
-    NumOperations: 1000,
+    NumOperations: 100,
   }
   TesterHelper("singleclient", args)
 }
