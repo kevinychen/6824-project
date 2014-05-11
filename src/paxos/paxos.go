@@ -444,7 +444,7 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
      * 2. in an election round
      * 3. past the first attempt
      */
-    if !(px.me == leader) || seq % LeaderLifetime == 0 || retry {
+    if !(px.me == leader) || remainder == 0 || retry {
       for i, _ := range px.peers {
         var ok bool
         reply := new(PrepareReply)
