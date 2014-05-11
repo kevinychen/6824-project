@@ -14,6 +14,7 @@ import "sort"
 import "time"
 
 type ShardMaster struct {
+  mu sync.Mutex
   logLock sync.Mutex
   execLock sync.Mutex
   l net.Listener
@@ -303,8 +304,10 @@ func (sm *ShardMaster) ExecuteQuery(op Op) Config {
 
 func (sm *ShardMaster) Insert(op Op) int {
     for !sm.dead {
+        sm.mu.Lock() // propose one op at a time
         seq := sm.px.Max() + 1
         sm.px.Start(seq, op)
+        sm.mu.Unlock()
         var agreedOp Op
         var decided bool
 
