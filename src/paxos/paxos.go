@@ -21,6 +21,7 @@ package paxos
 //
 
 import "encoding/gob"
+import "encoding/hex"
 import "net"
 import "net/rpc"
 import "log"
@@ -31,8 +32,11 @@ import "fmt"
 import "math/rand"
 import "time"
 import crand "crypto/rand"
+import "crypto/md5"
 import "strconv"
 import "math/big"
+import "io/ioutil"
+import "strings"
 
 func randStr() string {
   max := big.NewInt(int64(1) << 62)
@@ -82,6 +86,7 @@ type Instance struct {
 }
 
 type InstanceState struct {
+  Seq int
   MaxPn int64
   MaxAn int64
   MaxAv interface{}
@@ -96,8 +101,9 @@ type Paxos struct {
   peers []string
   me int // index into peers[]
   UID string
-  logFileName string
-
+  logPath string
+  encoder *gob.Encoder
+  decisionFile *os.File
 
   // Your data here.
   instances map[int]Instance
@@ -112,36 +118,93 @@ type Paxos struct {
 
 
 // PERSISTENCE
+func GetMD5Hash(text string) string {
+    hasher := md5.New()
+    hasher.Write([]byte(text))
+    return hex.EncodeToString(hasher.Sum(nil))
+}
 
-func (px *Paxos) logDecision(seq int, decidedValue interface{}) {
-    filename := fmt.Sprintf("logs/decision.%s.log", px.logFileName)
-    f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-    if err != nil {
-      log.Fatal(err)
-    }
-    enc := gob.NewEncoder(f)
-    enc.Encode(decidedValue)
-    f.Sync()
+func (px *Paxos) getInstanceFile(seq int) string {
+  return fmt.Sprintf("%s/instance.%d.log", px.logPath, seq)
+}
+
+func (px *Paxos) getDecisionFile() string {
+  return fmt.Sprintf("%s/decision.log", px.logPath)
+}
+
+func (px *Paxos) initializeEncoder() {
+  filename := px.getDecisionFile()
+  var err error
+  px.decisionFile, err = os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  px.encoder = gob.NewEncoder(px.decisionFile)
+}
+
+func (px *Paxos) logDecision(seq int, instance Instance) {
+  px.encoder.Encode(instance)
+  px.decisionFile.Sync()
+  // Delete any associated instance files, the decision has been committed
+  _ = os.Remove(px.getInstanceFile(seq))
 }
 
 func (px *Paxos) logInstance(seq int, state InstanceState) {
-    filename := fmt.Sprintf("logs/instance.%s.seq%d.log", px.logFileName, seq)
-    f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0666)
-    if err != nil {
-      log.Fatal(err)
-    }
-    enc := gob.NewEncoder(f)
-    enc.Encode(state)
-    f.Sync()
+  filename := px.getInstanceFile(seq)
+  f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  enc := gob.NewEncoder(f)
+  enc.Encode(state)
+  f.Close()
 }
 
 // Call under LOCK, puts directly into maps
-func (px *Paxos) loadInstance(seq int) {
+func (px *Paxos) loadInstances() {
+  files, _ := ioutil.ReadDir(px.logPath)
+  for _, fn := range files {
+    if strings.Contains(fn.Name(), "decision") {
+      continue
+    }
+    f, err := os.OpenFile(px.logPath + "/" + fn.Name(), os.O_RDONLY, 0666)
+    if err != nil {
+      log.Fatal(err)
+    }
+    dec := gob.NewDecoder(f)
+    state := InstanceState{}
+    dec.Decode(&state)
 
+    seq := state.Seq
+    px.maxProposalNs[seq] = state.MaxPn
+    px.maxAcceptNs[seq] = state.MaxAn
+    px.maxAcceptVs[seq] = state.MaxAv
+  }
 }
 
-func (px *Paxos) loadDecision(seq int) interface{} {
-    return nil
+// Load Persisted Decisions
+// Call under Lock
+func (px *Paxos) loadDecision() {
+  filename := px.getDecisionFile()
+  f, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  dec := gob.NewDecoder(f)
+  for {
+    instance := Instance{}
+    err = dec.Decode(&instance)
+    if err != nil {
+      break
+    }
+    px.instances[instance.Seq] = instance
+  }
+}
+
+// Call under Lock
+func (px *Paxos) Recover() {
+  px.loadInstances()
+  px.loadDecision()
 }
 
 // END PERSISTENCE
@@ -215,7 +278,7 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, InstanceState{px.maxProposalNs[seq], 
+  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
     px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
   // Release acceptor state lock
   px.mu.Unlock()
@@ -247,7 +310,7 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, InstanceState{px.maxProposalNs[seq], 
+  px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
     px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
   px.mu.Unlock()
   return reply
@@ -268,10 +331,12 @@ func (px *Paxos) doDecide(args *DecideArgs) *DecideReply {
   value := args.DecidedValue
   reply := new(DecideReply)
   reply.MinSequence = px.minSeqNums[px.me]
-  // Persist decision
-  px.logDecision(sequenceNumber, value)
 
-  px.instances[sequenceNumber] = Instance{sequenceNumber, true, value}
+  instance := Instance{sequenceNumber, true, value}
+  // Persist decision
+  px.logDecision(sequenceNumber, instance)
+
+  px.instances[sequenceNumber] = instance
   return reply
 }
 
@@ -299,6 +364,15 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
     maxSeenV := v
     prepareCount := 0
     numPeers := len(px.peers)
+
+    
+    px.mu.Lock()
+    _, ok := px.instances[seq]
+    if ok {
+      px.mu.Unlock()
+      break
+    }
+    px.mu.Unlock()
 
     for i, _ := range px.peers {
       var ok bool
@@ -503,9 +577,12 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px.peers = peers
   px.me = me
   fmt.Printf("peers: %v\n", px.peers)
-  px.UID = randStr()
-  px.logFileName = "me-" + px.UID
+  px.UID = GetMD5Hash(peers[me])
+  os.Mkdir("logs", os.ModeDir)
+  px.logPath = "logs/peer-" + px.UID
+  os.Mkdir(px.logPath, os.ModeDir)
 
+  px.initializeEncoder()
 
   // Your initialization code here.
   px.instances = make(map[int]Instance)
@@ -565,6 +642,8 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
           fmt.Printf("Paxos(%v) accept: %v\n", me, err.Error())
         }
       }
+      // Close decision log file
+      px.decisionFile.Close()
     }()
   }
 
