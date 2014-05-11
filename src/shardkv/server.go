@@ -409,7 +409,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
   defer kv.mu.Unlock()
 
   op := Op{Type:"Get", Key:args.Key, ID:args.ID, ConfigNum:args.ConfigNum}
-  
+
   for {
     seq := kv.GetMaxSeq()
     // Call Start
@@ -420,6 +420,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
       kv.SyncUntil(seq)
       reply.Err = kv.results[op.ID].Err
       reply.Value = kv.results[op.ID].Value
+      reply.Leader = kv.px.GetLeader(seq)
       return nil
     }
   }
@@ -442,6 +443,7 @@ func (kv *ShardKV) Put(args *PutArgs, reply *PutReply) error {
       kv.SyncUntil(seq)
       reply.PreviousValue = kv.results[op.ID].Value
       reply.Err = kv.results[op.ID].Err
+      reply.Leader = kv.px.GetLeader(seq)
       return nil
     }
   }

@@ -38,7 +38,7 @@ import "math/big"
 import "io/ioutil"
 import "strings"
 
-const LeaderLifetime = 10
+const LeaderLifetime = 20
 const Debug=0
 var Network = "unix"
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -97,7 +97,8 @@ type Instance struct {
   Seq int
   Decided bool
   Value interface{}
-  Leader int
+  LeaderId int
+  LeaderName string
   LeaderProposalNum int64
 }
 
@@ -380,11 +381,14 @@ func (px *Paxos) doDecide(args *DecideArgs) *DecideReply {
 
   sequenceNumber := args.SequenceNumber
   value := args.DecidedValue
+  leaderId := args.PeerId
+  proposalNum := args.ProposalNumber
   reply := new(DecideReply)
   reply.MinSequence = px.minSeqNums[px.me]
 
   instance := Instance{Seq: sequenceNumber, Decided: true,
-    Value: value, Leader: args.PeerId, LeaderProposalNum: args.ProposalNumber}
+    Value: value, LeaderId: leaderId, LeaderName: px.peers[leaderId],
+    LeaderProposalNum: proposalNum}
   // Persist decision
   px.logDecision(sequenceNumber, instance)
 
@@ -410,19 +414,19 @@ func (px *Paxos) atomicSequenceNumUpdate(seq int, peer int) {
 // Proposer
 func (px *Paxos) doPropose(seq int, v interface{}) {
   remainder := seq % LeaderLifetime // seq - remainder is index of last election round
-  leader := -1 // id of leader
+  leaderId := -1 // id of leader
   retry := false // true if skipping the prepare phase failed the first time
 
   // Leader is the winner of the last election round if it finished
   if px.instances[seq - remainder].Decided {
-    leader = px.instances[seq - remainder].Leader
+    leaderId = px.instances[seq - remainder].LeaderId
   }
 
   // While not decided, keep proposing!
   for !px.instances[seq].Decided && px.dead == false {
     proposalNum := px.getProposalNumber()
     // Use old proposal number for leader on the first attempt
-    if px.me == leader && !retry {
+    if px.me == leaderId && !retry {
       proposalNum = px.instances[seq - remainder].LeaderProposalNum
     }
     maxSeenN := int64(0)
@@ -444,7 +448,7 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
      * 2. in an election round
      * 3. past the first attempt
      */
-    if !(px.me == leader) || remainder == 0 || retry {
+    if !(px.me == leaderId) || remainder == 0 || retry {
       for i, _ := range px.peers {
         var ok bool
         reply := new(PrepareReply)
@@ -475,7 +479,7 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
      * 1. leader and first attempt
      * 2. majority of prepares
      */
-    if (px.me == leader && !retry) || prepareCount * 2 > numPeers {
+    if (px.me == leaderId && !retry) || prepareCount * 2 > numPeers {
       acceptCount := 0
       for i, _ := range px.peers {
         var ok bool
@@ -630,6 +634,19 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   return false, nil
 }
 
+// Get the leader for a paxos round
+func (px *Paxos) GetLeader(seq int) string {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+  remainder := seq % LeaderLifetime
+  inst, ok := px.instances[seq - remainder]
+  if ok {
+    if inst.Decided {
+      return inst.LeaderName
+    }
+  }
+  return ""
+}
 
 //
 // tell the peer to shut itself down.
