@@ -13,6 +13,8 @@ import "math/rand"
 import "sort"
 import "time"
 
+var Network = "unix"
+
 type ShardMaster struct {
   logLock sync.Mutex
   execLock sync.Mutex
@@ -392,7 +394,7 @@ func StartServer(servers []string, me int) *ShardMaster {
   sm.px = paxos.Make(servers, me, rpcs)
 
   os.Remove(servers[me])
-  l, e := net.Listen("unix", servers[me]);
+  l, e := net.Listen(Network, servers[me]);
   if e != nil {
     log.Fatal("listen error: ", e);
   }

@@ -202,6 +202,7 @@ type WriteOp struct {
   shard int
   key string
   value string
+  dbok bool
 }
 
 func (st *Storage) makeCache(capacity uint64) {
@@ -216,6 +217,11 @@ func (st *Storage) connectToDiskDB(url string) {
   }
   st.db = st.dbSession.DB("db").C("kvstore")
   st.snapshots = st.dbSession.DB("db").C("snapshots")
+}
+
+func (st *Storage) Clear() {
+  st.db.RemoveAll(bson.M{})
+  st.snapshots.RemoveAll(bson.M{})
 }
 
 func MakeStorage(capacity uint64, dbURL string) *Storage {
@@ -234,12 +240,13 @@ func (st *Storage) Get(key string, shardNum int) string {
 
   value, ok := st.cache.Get(key)
   if !ok {
-    //result := KVPair{}
-    //st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
-    /*if err != nil {
-      panic(err)
-    }*/
-    //value = result.value
+    result := KVPair{}
+    err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
+    if err != nil {
+      ok = false 
+    } else {
+      value = result.Value
+    }
   }
   return value
 }
@@ -247,14 +254,15 @@ func (st *Storage) Get(key string, shardNum int) string {
 
 func (st *Storage) Put(key string, value string, doHash bool, shardNum int) string {
   prev, ok := st.cache.Get(key)
+  var dbok bool
   if !ok {
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
-      ok = false
+      dbok = false
     } else {
-      prev = result.value
-      ok = true
+      prev = result.Value
+      dbok = true
     }
   }
 
@@ -269,7 +277,7 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     //deleted = st.cache.Put(key, value)
   }
 
-  st.writeLog[st.applied] = WriteOp{shardNum, key, value}
+  st.writeLog[st.applied] = WriteOp{shardNum, key, value, dbok}
   st.applied++
 
   // insert removed cache entries one at a time into DB, possibly faster if done together?
@@ -283,41 +291,48 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
   }*/
   return prev
 }
-/*
+
 func (st *Storage) CreateSnapshot(confignum int) {
   cachedata := st.cache.KVPairs()
-  results := []KVPair
-  for i := 0; i < len(cachedata); i++ {
-    st.db.Insert(&SnapshotKV{confignum, cachedata[i].shard, cachedata[i].key, cachedata[i].value})
-  }
+  results := []KVPair{}
+  index := 0
   for len(results) >= 100 {
-    st.db.Find(bson.M{}).Skip(index * GRABSIZE).Limit(GRABSIZE).All(&results)
+    st.db.Find(bson.M{}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
-      st.db.Insert(&SnapshotKV{confignum, results[i].shard, results[i].key, results[i].value})
+      st.db.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
     }
+    index++
+  }
+  for i := 0; i < len(cachedata); i++ {
+    st.db.Insert(&SnapshotKV{confignum, cachedata[i].Shard, cachedata[i].Key, cachedata[i].Value, true})
   }
 }
 
 func (st *Storage) ReadSnapshot(confignum int, shardnum int, index int, cache bool) map[string]string {
   piece := make(map[string]string)
-  results := []SnapshotKV
+  results := []SnapshotKV{}
   if cache {
-    st.snapshots.Find(bson.M{"cache": "true", "config": confignum}).Skip(index * GRABSIZE).Limit(GRABSIZE).All(&results)
+    st.snapshots.Find(bson.M{"cache": "true", "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   } else {
-    st.snapshots.Find(bson.M{"cache": "false", "config": confignum}).Skip(index * GRABSIZE).Limit(GRABSIZE).All(&results)
+    st.snapshots.Find(bson.M{"cache": "false", "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   }
   for i := 0; i < len(results); i++ {
-    piece[results[i].key] = results[i].value
+    piece[results[i].Key] = results[i].Value
   }
   return piece
 }
-*/
+
 func (st *Storage) writeInBackground() {
   current := 0
   for {
     if st.applied > current {
       currentWrite := st.writeLog[current]
-      err := st.db.Insert(&KVPair{currentWrite.shard, currentWrite.key, currentWrite.value})
+      var err error
+      if !currentWrite.dbok {
+        err = st.db.Insert(&KVPair{currentWrite.shard, currentWrite.key, currentWrite.value})
+      } else {
+        err = st.db.Update(bson.M{"shard": currentWrite.shard, "key": currentWrite.key}, bson.M{"$set": bson.M{"value": currentWrite.value}})
+      }
       if err != nil {
         panic(err)
       }
@@ -329,5 +344,5 @@ func (st *Storage) writeInBackground() {
 }
 
 func (st *Storage) closeDBConnection() {
-  st.dbSession.Close() 
+  st.dbSession.Close()
 }
