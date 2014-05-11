@@ -245,6 +245,7 @@ func (kv *ShardKV) Grab(args *GrabArgs, reply *GrabReply) error {
     time.Sleep(20 * time.Millisecond)
   }
   reply.Dedup = kv.storage.ReadSnapshotDedup(args.ConfigNum)
+  reply.Err = OK
   return nil
 }
 
