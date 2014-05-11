@@ -390,7 +390,7 @@ func (kv *ShardKV) tick() {
 }
 
 // tell the server to shut itself down.
-func (kv *ShardKV) kill() {
+func (kv *ShardKV) Kill() {
   kv.dead = true
   kv.l.Close()
   kv.px.Kill()
@@ -474,7 +474,7 @@ func StartServer(gid int64, shardmasters []string,
       }
       if err != nil && kv.dead == false {
         DPrintf("ShardKV(%v) accept: %v\n", me, err.Error())
-        kv.kill()
+        kv.Kill()
       }
     }
   }()

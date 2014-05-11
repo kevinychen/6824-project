@@ -92,7 +92,7 @@ func localSetup(name string, args SetupArgs) (System, func()) {
     }
     for i := 0; i < args.NumGroups; i++ {
       for j := 0; j < args.NumReplicas; j++ {
-//        skvs[i][j].kill()  // private method?
+        skvs[i][j].Kill()
       }
     }
   }
