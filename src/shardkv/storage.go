@@ -222,8 +222,11 @@ func (st *Storage) connectToDiskDB(url string) {
 
 func (st *Storage) DBClear() {
   st.db.RemoveAll(bson.M{})
-  st.snapshots.RemoveAll(bson.M{})
-  st.dedupsnaps.RemoveAll(bson.M{})
+  check, _ := st.snapshots.Find(bson.M{}).Count() 
+  if (check > 0) {
+    st.snapshots.RemoveAll(bson.M{})
+    st.dedupsnaps.RemoveAll(bson.M{})
+  }
 }
 
 func (st *Storage) CacheClear() {
@@ -322,7 +325,7 @@ func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
   }
 }
 
-func (st *Storage) ReadSnapshotDB(confignum int, shardnum int, index int, cache bool) map[string]string, bool {
+func (st *Storage) ReadSnapshotDB(confignum int, shardnum int, index int, cache bool) (p map[string]string, fin bool) {
   piece := make(map[string]string)
   results := []SnapshotKV{}
   if cache {
@@ -344,9 +347,9 @@ func (st *Storage) ReadSnapshotDedup(confignum int) map[string]ClientReply {
   results := []SnapshotDedup{}
   st.dedupsnaps.Find(bson.M{"config": confignum}).All(&results)
   for i := 0; i < len(results); i++ {
-    dedup[results[i].Key] = ClientReply{Value: results[i].Value, results[i].Err, results[i].Counter}
+    dedup[results[i].Key] = ClientReply{results[i].Value, results[i].Err, results[i].Counter}
   }
-  return results
+  return dedup
 }
 
 func (st *Storage) writeInBackground() {
