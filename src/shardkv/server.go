@@ -16,6 +16,11 @@ import "strconv"
 import "strings"
 
 const Debug=0
+
+const (
+  END_OP = "END_OPERATION"
+)
+
 var Network="unix"
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -34,6 +39,16 @@ type ClientReply struct {
   Value string
   Err Err
   Counter int64
+}
+
+type UndoInfo struct {
+  IsReconfigure bool
+  Seq int // possibly redundant
+  Key string
+  Value string
+  ClientID string
+  Result ClientReply
+  Config shardmaster.Config
 }
 
 type ShardKV struct {
@@ -59,7 +74,8 @@ type ShardKV struct {
   horizon int
   max int
   configNum int
-  paxosLogFile string
+  logFile *os.File
+  logFilename string
   enc *gob.Encoder
 }
 
@@ -76,22 +92,32 @@ type Op struct {
 }
 
 // PERSISTENCE
-func appendPaxosLog(enc *gob.Encoder, op Op, seq int) {
-  enc.Encode(seq)
-  enc.Encode(op)
+func makeReconfigureUndoLog(seq int, config shardmaster.Config) UndoInfo {
+  return UndoInfo{IsReconfigure:true, Seq:seq, Config:config}
 }
 
-func (kv *ShardKV) logPaxos() {
+func makeStandardUndoLog(seq int, key, value, clientid string, result ClientReply) UndoInfo {
+  return UndoInfo{IsReconfigure:false, Seq:seq, Key:key, Value:value,
+    ClientID:clientid, Result:result}
+}
+
+func (kv *ShardKV) appendOperation(op Op) {
+  kv.enc.Encode(op)
+  kv.enc.Encode(END_OP)
+  kv.logFile.Sync()
+}
+
+func (kv *ShardKV) appendUndoInfo(info UndoInfo) {
+  kv.enc.Encode(info)
+  kv.logFile.Sync()
+}
+
+// Shouldn't be used
+func (kv *ShardKV) logBackground() {
   current := 0
-  f, err := os.OpenFile(kv.paxosLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)  // note: file never closed
-  if err != nil {
-    log.Fatal(err)
-  }
-  kv.enc = gob.NewEncoder(f)
   for {
     if kv.horizon > current {
-      appendPaxosLog(kv.enc, kv.localLog[current], current)
-      f.Sync()
+      kv.appendOperation(kv.localLog[current])
       delete(kv.localLog, current)
       current++
     }
@@ -435,10 +461,17 @@ func StartServer(gid int64, shardmasters []string,
 
   kv.px = paxos.Make(servers, me, rpcs)
   kv.uid = strconv.FormatInt(nrand(), 10)
-  kv.paxosLogFile = fmt.Sprintf("logs/paxos_log_%d_%d.log", kv.me, kv.gid)
 
-  go kv.logPaxos()
+  // Logging
+  kv.logFilename = fmt.Sprintf("logs/paxos_log_%d_%d.log", kv.me, kv.gid)
+  var err error
+  kv.logFile, err = os.OpenFile(kv.logFilename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  kv.enc = gob.NewEncoder(kv.logFile)
 
+//  go kv.logBackground()
 
   os.Remove(servers[me])
   l, e := net.Listen(Network, servers[me]);
