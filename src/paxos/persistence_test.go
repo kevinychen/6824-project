@@ -8,101 +8,6 @@ import "time"
 import "fmt"
 import "math/rand"
 
-/*
-func port(tag string, host int) string {
-  s := "/var/tmp/824-"
-  s += strconv.Itoa(os.Getuid()) + "/"
-  os.Mkdir(s, 0777)
-  s += "px-"
-  s += strconv.Itoa(os.Getpid()) + "-"
-  s += tag + "-"
-  s += strconv.Itoa(host)
-  return s
-}
-
-func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
-  count := 0
-  var v interface{}
-  for i := 0; i < len(pxa); i++ {
-    if pxa[i] != nil {
-      decided, v1 := pxa[i].Status(seq)
-      if decided {
-        if count > 0 && v != v1 {
-          t.Fatalf("decided values do not match; seq=%v i=%v v=%v v1=%v",
-            seq, i, v, v1)
-        }
-        count++
-        v = v1
-      }
-    }
-  }
-  return count
-}
-
-func waitn(t *testing.T, pxa[]*Paxos, seq int, wanted int) {
-  to := 10 * time.Millisecond
-  for iters := 0; iters < 30; iters++ {
-    if ndecided(t, pxa, seq) >= wanted {
-      break
-    }
-    time.Sleep(to)
-    if to < time.Second {
-      to *= 2
-    }
-  }
-  nd := ndecided(t, pxa, seq)
-  if nd < wanted {
-    t.Fatalf("too few decided; seq=%v ndecided=%v wanted=%v", seq, nd, wanted)
-  }
-}
-
-func waitmajority(t *testing.T, pxa[]*Paxos, seq int) {
-  waitn(t, pxa, seq, (len(pxa) / 2) + 1)
-}
-
-func checkmax(t *testing.T, pxa[]*Paxos, seq int, max int) {
-  time.Sleep(3 * time.Second)
-  nd := ndecided(t, pxa, seq)
-  if nd > max {
-    t.Fatalf("too many decided; seq=%v ndecided=%v max=%v", seq, nd, max)
-  }
-}
-
-func cleanup(pxa []*Paxos) {
-  for i := 0; i < len(pxa); i++ {
-    if pxa[i] != nil {
-      pxa[i].Kill()
-    }
-  }
-}
-
-func noTestSpeed(t *testing.T) {
-  runtime.GOMAXPROCS(4)
-
-  const npaxos = 3
-  var pxa []*Paxos = make([]*Paxos, npaxos)
-  var pxh []string = make([]string, npaxos)
-  defer cleanup(pxa)
-
-  for i := 0; i < npaxos; i++ {
-    pxh[i] = port("time", i)
-  }
-  for i := 0; i < npaxos; i++ {
-    pxa[i] = Make(pxh, i, nil)
-  }
-
-  t0 := time.Now()
-
-  for i := 0; i < 20; i++ {
-    pxa[0].Start(i, "x")
-    waitn(t, pxa, i, npaxos)
-  }
-
-  d := time.Since(t0)
-  fmt.Printf("20 agreements %v seconds\n", d.Seconds())
-}
-*/
-
 func TestBasicPersistence(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -118,7 +23,7 @@ func TestBasicPersistence(t *testing.T) {
     pxa[i] = Make(pxh, i, nil)
   }
 
-  fmt.Printf("Test: Single proposer ...\n")
+  fmt.Printf("Test: Persistent: Single proposer ...\n")
 
   pxa[0].Start(0, "hello")
   waitn(t, pxa, 0, npaxos)
@@ -128,7 +33,7 @@ func TestBasicPersistence(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Many proposers, same value ...\n")
+  fmt.Printf("Test: Persistent: Many proposers, same value ...\n")
 
   for i := 0; i < npaxos; i++ {
     pxa[i].Start(1, 77)
@@ -137,7 +42,7 @@ func TestBasicPersistence(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Many proposers, different values ...\n")
+  fmt.Printf("Test: Persistent: Many proposers, different values ...\n")
 
   pxa[0].Start(2, 100)
   pxa[1].Start(2, 101)
@@ -146,7 +51,7 @@ func TestBasicPersistence(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Out-of-order instances ...\n")
+  fmt.Printf("Test: Persistent: Out-of-order instances ...\n")
 
   pxa[0].Start(7, 700)
   pxa[0].Start(6, 600)
@@ -191,7 +96,7 @@ func TestDeafPersistent(t *testing.T) {
     pxa[i] = Make(pxh, i, nil)
   }
 
-  fmt.Printf("Test: Deaf proposer ...\n")
+  fmt.Printf("Test: Persistent: Deaf proposer ...\n")
 
   pxa[0].Start(0, "hello")
   waitn(t, pxa, 0, npaxos)
@@ -250,7 +155,7 @@ func TestForgetPersistent(t *testing.T) {
     pxa[i] = Make(pxh, i, nil)
   }
 
-  fmt.Printf("Test: Forgetting ...\n")
+  fmt.Printf("Test: Persistent: Forgetting ...\n")
 
   // initial Min() correct?
   for i := 0; i < npaxos; i++ {
@@ -317,143 +222,10 @@ func TestForgetPersistent(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-/*
-func TestManyForget(t *testing.T) {
-  runtime.GOMAXPROCS(4)
-
-  const npaxos = 3
-  var pxa []*Paxos = make([]*Paxos, npaxos)
-  var pxh []string = make([]string, npaxos)
-  defer cleanup(pxa)
-  
-  for i := 0; i < npaxos; i++ {
-    pxh[i] = port("manygc", i)
-  }
-  for i := 0; i < npaxos; i++ {
-    pxa[i] = Make(pxh, i, nil)
-    pxa[i].unreliable = true
-  }
-
-  fmt.Printf("Test: Lots of forgetting ...\n")
-
-  const maxseq = 20
-  done := false
-
-  go func() {
-    na := rand.Perm(maxseq)
-    for i := 0; i < len(na); i++ {
-      seq := na[i]
-      j := (rand.Int() % npaxos)
-      v := rand.Int() 
-      pxa[j].Start(seq, v)
-      runtime.Gosched()
-    }
-  }()
-
-  go func() {
-    for done == false {
-      seq := (rand.Int() % maxseq)
-      i := (rand.Int() % npaxos)
-      if seq >= pxa[i].Min() {
-        decided, _ := pxa[i].Status(seq)
-        if decided {
-          pxa[i].Done(seq)
-        }
-      }
-      runtime.Gosched()
-    }
-  }()
-
-  time.Sleep(5 * time.Second)
-  done = true
-  for i := 0; i < npaxos; i++ {
-    pxa[i].unreliable = false
-  }
-  time.Sleep(2 * time.Second)
-
-  for seq := 0; seq < maxseq; seq++ {
-    for i := 0; i < npaxos; i++ {
-      if seq >= pxa[i].Min() {
-        pxa[i].Status(seq)
-      }
-    }
-  }
-
-  fmt.Printf("  ... Passed\n")
-}
-
-//
-// does paxos forgetting actually free the memory?
-//
-func TestForgetMem(t *testing.T) {
-  runtime.GOMAXPROCS(4)
-
-  fmt.Printf("Test: Paxos frees forgotten instance memory ...\n")
-
-  const npaxos = 3
-  var pxa []*Paxos = make([]*Paxos, npaxos)
-  var pxh []string = make([]string, npaxos)
-  defer cleanup(pxa)
-  
-  for i := 0; i < npaxos; i++ {
-    pxh[i] = port("gcmem", i)
-  }
-  for i := 0; i < npaxos; i++ {
-    pxa[i] = Make(pxh, i, nil)
-  }
-
-  pxa[0].Start(0, "x")
-  waitn(t, pxa, 0, npaxos)
-
-  runtime.GC()
-  var m0 runtime.MemStats
-  runtime.ReadMemStats(&m0)
-  // m0.Alloc about a megabyte
-
-  for i := 1; i <= 10; i++ {
-    big := make([]byte, 1000000)
-    for j := 0; j < len(big); j++ {
-      big[j] = byte('a' + rand.Int() % 26)
-    }
-    pxa[0].Start(i, string(big))
-    waitn(t, pxa, i, npaxos)
-  }
-
-  runtime.GC()
-  var m1 runtime.MemStats
-  runtime.ReadMemStats(&m1)
-  // m1.Alloc about 90 megabytes
-
-  for i := 0; i < npaxos; i++ {
-    pxa[i].Done(10)
-  }
-  for i := 0; i < npaxos; i++ {
-    pxa[i].Start(11 + i, "z")
-  }
-  time.Sleep(3 * time.Second)
-  for i := 0; i < npaxos; i++ {
-    if pxa[i].Min() != 11 {
-      t.Fatalf("expected Min() %v, got %v\n", 11, pxa[i].Min())
-    }
-  }
-
-  runtime.GC()
-  var m2 runtime.MemStats
-  runtime.ReadMemStats(&m2)
-  // m2.Alloc about 10 megabytes
-
-  if m2.Alloc > (m1.Alloc / 2) {
-    t.Fatalf("memory use did not shrink enough")
-  }
-
-  fmt.Printf("  ... Passed\n")
-}
-*/
-
 func TestRPCCountPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  fmt.Printf("Test: RPC counts aren't too high ...\n")
+  fmt.Printf("Test: Persistent: RPC counts aren't too high ...\n")
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -537,7 +309,7 @@ func TestRPCCountPersistent(t *testing.T) {
 func TestManyPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  fmt.Printf("Test: Many instances ...\n")
+  fmt.Printf("Test: Persistent: Many instances ...\n")
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -595,7 +367,7 @@ func TestManyPersistent(t *testing.T) {
 func TestOldPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  fmt.Printf("Test: Minority proposal ignored ...\n")
+  fmt.Printf("Test: Persistent: Minority proposal ignored ...\n")
 
   const npaxos = 5
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -611,32 +383,14 @@ func TestOldPersistent(t *testing.T) {
   pxa[3] = Make(pxh, 3, nil)
   pxa[1].Start(1, 111)
 
-  // RESET
-  pxa[1].HardReset()
-  pxa[2].HardReset()
-  pxa[3].HardReset()
-
   waitmajority(t, pxa, 1)
-
-  // RESET
-  pxa[1].HardReset()
-  pxa[2].HardReset()
-  pxa[3].HardReset()
 
   pxa[0] = Make(pxh, 0, nil)
   // RESET
-  pxa[0].HardReset()
-  pxa[1].HardReset()
   pxa[2].HardReset()
   pxa[3].HardReset()
 
   pxa[0].Start(1, 222)
-
-  // RESET
-  pxa[0].HardReset()
-  pxa[1].HardReset()
-  pxa[2].HardReset()
-  pxa[3].HardReset()
 
   waitn(t, pxa, 1, 4)
 
@@ -644,12 +398,13 @@ func TestOldPersistent(t *testing.T) {
   pxa[0].HardReset()
   pxa[1].HardReset()
   pxa[2].HardReset()
-  pxa[3].HardReset()
+  pxa[3].Kill()
 
-  if false {
+  if true {
     pxa[4] = Make(pxh, 4, nil)
-    pxa[4].HardReset()
+    pxa[0].Start(1, 333)
     waitn(t, pxa, 1, npaxos)
+    ndecided(t, pxa, 1)
   }
 
   fmt.Printf("  ... Passed\n")
@@ -661,7 +416,7 @@ func TestOldPersistent(t *testing.T) {
 func TestManyUnreliablePersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  fmt.Printf("Test: Many instances, unreliable RPC ...\n")
+  fmt.Printf("Test: Persistent: Many instances, unreliable RPC ...\n")
 
   const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
@@ -708,49 +463,6 @@ func TestManyUnreliablePersistent(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-/*
-func pp(tag string, src int, dst int) string {
-  s := "/var/tmp/824-"
-  s += strconv.Itoa(os.Getuid()) + "/"
-  s += "px-" + tag + "-"
-  s += strconv.Itoa(os.Getpid()) + "-"
-  s += strconv.Itoa(src) + "-"
-  s += strconv.Itoa(dst)
-  return s
-}
-
-func cleanpp(tag string, n int) {
-  for i := 0; i < n; i++ {
-    for j := 0; j < n; j++ {
-      ij := pp(tag, i, j)
-      os.Remove(ij)
-    }
-  }
-}
-
-func part(t *testing.T, tag string, npaxos int, p1 []int, p2 []int, p3 []int) {
-  cleanpp(tag, npaxos)
-
-  pa := [][]int{p1, p2, p3}
-  for pi := 0; pi < len(pa); pi++ {
-    p := pa[pi]
-    for i := 0; i < len(p); i++ {
-      for j := 0; j < len(p); j++ {
-        ij := pp(tag, p[i], p[j])
-        pj := port(tag, p[j])
-        err := os.Link(pj, ij)
-        if err != nil {
-          // one reason this link can fail is if the
-          // corresponding Paxos peer has prematurely quit and
-          // deleted its socket file (e.g., called px.Kill()).
-          t.Fatalf("os.Link(%v, %v): %v\n", pj, ij, err)
-        }
-      }
-    }
-  }
-}
-*/
-
 func TestPartitionPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -775,7 +487,7 @@ func TestPartitionPersistent(t *testing.T) {
 
   seq := 0
 
-  fmt.Printf("Test: No decision if partitioned ...\n")
+  fmt.Printf("Test: Persistent: No decision if partitioned ...\n")
 
   part(t, tag, npaxos, []int{0,2}, []int{1,3}, []int{4})
   pxa[1].Start(seq, 111)
@@ -787,7 +499,7 @@ func TestPartitionPersistent(t *testing.T) {
   
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Decision in majority partition ...\n")
+  fmt.Printf("Test: Persistent: Decision in majority partition ...\n")
 
   part(t, tag, npaxos, []int{0}, []int{1,2,3}, []int{4})
   // RESET
@@ -800,7 +512,12 @@ func TestPartitionPersistent(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: All agree after full heal ...\n")
+  fmt.Printf("Test: Persistent: All agree after full heal ...\n")
+
+  part(t, tag, npaxos, []int{1}, []int{0,2,3,4}, []int{})
+
+  pxa[2].HardReset()
+  pxa[0].HardReset()
 
   pxa[0].Start(seq, 1000) // poke them
 
@@ -814,7 +531,7 @@ func TestPartitionPersistent(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: One peer switches partitions ...\n")
+  fmt.Printf("Test: Persistent: One peer switches partitions ...\n")
 
 
   for iters := 0; iters < 20; iters++ {
@@ -845,7 +562,7 @@ func TestPartitionPersistent(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: One peer switches partitions, unreliable ...\n")
+  fmt.Printf("Test: Persistent: One peer switches partitions, unreliable ...\n")
 
 
   for iters := 0; iters < 20; iters++ {
@@ -885,7 +602,7 @@ func TestPartitionPersistent(t *testing.T) {
 func TestLotsPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  fmt.Printf("Test: Many requests, changing partitions ...\n")
+  fmt.Printf("Test: Persistent: Many requests, changing partitions ...\n")
 
   tag := "lots"
   const npaxos = 5

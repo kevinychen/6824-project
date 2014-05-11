@@ -8,7 +8,7 @@ package paxos
 // Manages a sequence of agreed-on values.
 // The set of peers is fixed.
 // Copes with network failures (partition, msg loss, &c).
-// Does not store anything persistently, so cannot handle crash+restart.
+// Does not store anything persistently, so cannot handle crash+restart. (Now it does)
 //
 // The application interface:
 //
@@ -37,6 +37,14 @@ import "strconv"
 import "math/big"
 import "io/ioutil"
 import "strings"
+
+const Debug=0
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+  if Debug > 0 {
+    log.Printf(format, a...)
+  }
+  return
+}
 
 func randStr() string {
   max := big.NewInt(int64(1) << 62)
@@ -150,7 +158,8 @@ func (px *Paxos) logDecision(seq int, instance Instance) {
   px.encoder.Encode(instance)
   px.decisionFile.Sync()
   // Delete any associated instance files, the decision has been committed
-  _ = os.Remove(px.getInstanceFile(seq))
+  // Needs more clever implementation to ensure decisions aren't overridden
+  //  _ = os.Remove(px.getInstanceFile(seq))
 }
 
 func (px *Paxos) logInstance(seq int, state InstanceState) {
@@ -212,7 +221,9 @@ func (px *Paxos) loadDecision() {
     if err != nil {
       break
     }
-    px.instances[instance.Seq] = instance
+    if instance.Decided {
+      px.instances[instance.Seq] = instance
+    }
   }
 }
 
@@ -294,6 +305,7 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
   reply := new(PrepareReply)
   // Acquire acceptor state lock
   px.mu.Lock()
+  defer px.mu.Unlock()
   if proposalNumber > px.maxProposalNs[seq] {
     px.maxProposalNs[seq] = proposalNumber
     reply.SeenNumber = px.maxAcceptNs[seq]
@@ -305,8 +317,6 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
   // Persist state
   px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
     px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
-  // Release acceptor state lock
-  px.mu.Unlock()
   return reply
 }
 
@@ -325,6 +335,7 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
   reply := new(AcceptReply)
 
   px.mu.Lock()
+  defer px.mu.Unlock()
   if proposalNumber >= px.maxProposalNs[seq] {
     px.maxProposalNs[seq] = proposalNumber
     px.maxAcceptNs[seq] = proposalNumber
@@ -337,7 +348,6 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
   // Persist state
   px.logInstance(seq, InstanceState{seq, px.maxProposalNs[seq], 
     px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
-  px.mu.Unlock()
   return reply
 }
 
