@@ -10,6 +10,8 @@ import "hash/fnv"
 // You will have to modify these definitions.
 //
 
+var Network = "unix"
+
 const (
   OK = "OK"
   ErrNoKey = "ErrNoKey"
