@@ -578,9 +578,9 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px.me = me
   fmt.Printf("peers: %v\n", px.peers)
   px.UID = GetMD5Hash(peers[me])
-  os.Mkdir("logs", os.ModeDir)
+  os.Mkdir("logs", 0700)
   px.logPath = "logs/peer-" + px.UID
-  os.Mkdir(px.logPath, os.ModeDir)
+  os.Mkdir(px.logPath, 0700)
 
   px.initializeEncoder()
 
