@@ -21,8 +21,6 @@ const (
   END_OP = "END_OPERATION"
 )
 
-var Network="unix"
-
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
     log.Printf(format, a...)

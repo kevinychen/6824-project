@@ -13,13 +13,14 @@ import "time"
 // 3 shards, 1 shardkv server per group. [6825-6827]
 // 1 client per machine.
 
-var SERVERS = []string{"simple.mit.edu", "nextcode.mit.edu", "nextres.mit.edu"}
+const N = 1
+var SERVERS = []string{"simple.mit.edu", "nextcode.mit.edu", "18.189.115.144"}
 const PORT0 = 6824
 
 // Run this with parameter 0, 1, or 2.
 const Index = 0
 
-const NumOperations = 100
+const NumOperations = 10
 
 func TestNetwork(t *testing.T) {
   runtime.GOMAXPROCS(4)
@@ -28,20 +29,20 @@ func TestNetwork(t *testing.T) {
 
   // Start shardmster
   fmt.Printf("Starting shardmaster...\n")
-  smHosts := make([]string, 3)
-  for i := 0; i < 3; i++ {
+  smHosts := make([]string, N)
+  for i := 0; i < N; i++ {
     smHosts[i] = fmt.Sprintf("%s:%d", SERVERS[i], PORT0)
   }
   shardmaster.StartServer(smHosts, Index)
 
   // Start ShardKV server
   fmt.Printf("Starting shard server...\n")
-  gids := make([]int64, 3)
-  skvHosts := make([][]string, 3)
-  for i := 0; i < 3; i++ {
+  gids := make([]int64, N)
+  skvHosts := make([][]string, N)
+  for i := 0; i < N; i++ {
     gids[i] = int64(100 + i)
-    skvHosts[i] = make([]string, 3)
-    for j := 0; j < 3; j++ {
+    skvHosts[i] = make([]string, N)
+    for j := 0; j < N; j++ {
       skvHosts[i][j] = fmt.Sprintf("%s:%d", SERVERS[j], PORT0 + 1 + i)
     }
     shardkv.StartServer(gids[i], smHosts, skvHosts[i], Index)
@@ -51,7 +52,8 @@ func TestNetwork(t *testing.T) {
   fmt.Printf("Starting shardmaster clerk...\n")
   if Index == 0 {
     smClerk := shardmaster.MakeClerk(smHosts)
-    for i := 0; i < 3; i++ {
+    for i := 0; i < N; i++ {
+      fmt.Printf("about to join %d\n", i)
       smClerk.Join(gids[i], skvHosts[i])
     }
   }

@@ -21,6 +21,7 @@ package shardmaster
 //
 
 const NShards = 10
+var Network = "unix"
 
 type Config struct {
   Num int // config number
