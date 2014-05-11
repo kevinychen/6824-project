@@ -16,7 +16,6 @@ import "strconv"
 import "strings"
 
 const Debug=0
-var Network="unix"
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
