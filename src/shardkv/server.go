@@ -59,6 +59,7 @@ type ShardKV struct {
   max int
   configNum int
   paxosLogFile string
+
 }
 
 type Op struct {

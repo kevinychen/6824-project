@@ -13,9 +13,10 @@ type Clerk struct {
   mu sync.Mutex // one RPC at a time
   sm *shardmaster.Clerk
   config shardmaster.Config
-  // You'll have to modify Clerk.
+  
   ID string
   Counter int64
+
 }
 
 func nrand() int64 {
