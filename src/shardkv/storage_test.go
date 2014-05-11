@@ -87,22 +87,55 @@ func TestCacheOverflow(t *testing.T) {
   fmt.Printf(" ... Passed\n")
 }
 
+
 func TestStorageBasic(t *testing.T) {
   fmt.Printf("Test: Storage Basic Units\n")
 
-  storage := MakeStorage(100000, "127.0.0.1:27017")
+  storage := MakeStorage(200, "127.0.0.1:27017")
+  storage.Clear()
 
   numPuts := 50
   for i := 0; i < numPuts; i++ {
     storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1)
   }
+  time.Sleep(3000 * time.Millisecond) // wait for quiesence
   for i := 0; i < numPuts; i++ {
     value := storage.Get(strconv.Itoa(i), 1)
     if value != strconv.Itoa(i*i) {
       t.Fatalf("Get got wrong value!; value=%v, expected=%v", value, i*i)
     }
   }
-  time.Sleep(3000 * time.Millisecond) 
+  time.Sleep(3000 * time.Millisecond) // wait for quiesence
+  storage.closeDBConnection()
+  fmt.Printf(" ... Passed\n")
+}
+
+func TestStorageSnapshots(t *testing.T) {
+  fmt.Printf("Test: Storage Snapshotting\n")
+
+  storage := MakeStorage(200, "127.0.0.1:27017")
+  storage.Clear()
+
+  numPuts := 50
+  for i := 0; i < numPuts; i++ {
+    storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1)
+  }
+  time.Sleep(3000 * time.Millisecond)
+
+  storage.CreateSnapshot(1)
+
+  time.Sleep(3000 * time.Millisecond)
+
+  piece := storage.ReadSnapshot(1, 1, 0, true)
+  for k, v := range piece {
+    cacheval := storage.Get(k, 1)
+    if v != cacheval {
+      t.Fatalf("Snapshot cache values differed from actual cache values!; actual=%v, expected=%v", v, cacheval)
+    }
+  }
+
+  time.Sleep(3000 * time.Millisecond)
+  
   storage.closeDBConnection()
   fmt.Printf(" ... Passed\n")
 }

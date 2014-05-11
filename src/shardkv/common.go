@@ -16,13 +16,22 @@ const (
   ErrWrongGroup = "ErrWrongGroup"
   NoOpID = "No-Op!:1"
   ErrorString = "--OPERATION NOT EXECUTED--"
+  GrabSize = 500
 )
 type Err string
 
 type KVPair struct {
-  shard int
-  key string
-  value string
+  Shard int
+  Key string
+  Value string
+}
+
+type SnapshotKV struct {
+  Config int
+  Shard int
+  Key string
+  Value string
+  Cache bool
 }
 
 type PutArgs struct {
@@ -34,7 +43,6 @@ type PutArgs struct {
   // otherwise RPC will break.
   ID string
   ConfigNum int
-
 }
 
 type PutReply struct {
