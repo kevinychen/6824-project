@@ -38,7 +38,9 @@ type ShardMaster struct {
   openRequests map[string]int
   horizon int
   maxConfigNum int
+
   paxosLogFile string
+  enc *gob.Encoder
 }
 
 func nrand() int64 {
@@ -62,33 +64,36 @@ type Op struct {
 }
 
 // PERSISTENCE
-func appendPaxosLog(filename string, op Op, seq int) {
-  f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+func appendPaxosLog(enc *gob.Encoder, op Op, seq int) {
+  enc.Encode(seq)
+  enc.Encode(op)
+}
+
+func rollback(sm *ShardMaster) {
+  // This function doesn't do anything; it's just
+  //   a reference for gob decoding.
+  f, err := os.Open(sm.paxosLogFile)
   if err != nil {
     log.Fatal(err)
   }
-  // sequence
-  _, _ = f.WriteString(fmt.Sprintf("Seq:%d\n", seq))
-  // type
-  _, _ = f.WriteString(fmt.Sprintf("Type:%s\n", op.Type))
-  // ID
-  _, _ = f.WriteString(fmt.Sprintf("ID:%s\n", op.ID))
-  // key
-  _, _ = f.WriteString(fmt.Sprintf("GID:%d\n", op.GID))
-  // servers
-  _, _ = f.WriteString(fmt.Sprintf("Servers:%v\n", op.Servers))
-  // shard
-  _, _ = f.WriteString(fmt.Sprintf("Shard:%d\n", op.Shard))
-  // Num
-  _, _ = f.WriteString(fmt.Sprintf("Num:%d\n", op.Num))
-  f.Close()
+  dec := gob.NewDecoder(f)
+  var seq int
+  var op Op
+  dec.Decode(&seq)
+  dec.Decode(&op)
 }
 
 func (sm *ShardMaster) logPaxos() {
   current := 0
+  f, err := os.OpenFile(sm.paxosLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)  // note: file never closed
+  if err != nil {
+    log.Fatal(err)
+  }
+  sm.enc = gob.NewEncoder(f)
   for {
     if sm.horizon > current {
-      appendPaxosLog(sm.paxosLogFile, sm.localLog[current], current)
+      appendPaxosLog(sm.enc, sm.localLog[current], current)
+      delete(sm.localLog, current)
       current++
     }
     time.Sleep(25 * time.Millisecond)

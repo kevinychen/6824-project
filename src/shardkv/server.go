@@ -59,6 +59,7 @@ type ShardKV struct {
   max int
   configNum int
   paxosLogFile string
+  enc *gob.Encoder
 }
 
 type Op struct {
@@ -74,35 +75,21 @@ type Op struct {
 }
 
 // PERSISTENCE
-func appendPaxosLog(filename string, op Op, seq int) {
-  f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
-  if err != nil {
-    log.Fatal(err)
-  }
-  // sequence
-  _, _ = f.WriteString(fmt.Sprintf("Seq:%d\n", seq))
-  // type
-  _, _ = f.WriteString(fmt.Sprintf("Type:%s\n", op.Type))
-  // key
-  _, _ = f.WriteString(fmt.Sprintf("Key:%s\n", op.Key))
-  // value
-  _, _ = f.WriteString(fmt.Sprintf("Value:%s\n", op.Value))
-  // DoHash
-  _, _ = f.WriteString(fmt.Sprintf("DoHash:%t\n", op.DoHash))
-  // ConfigNum
-  _, _ = f.WriteString(fmt.Sprintf("ConfigNum:%d\n", op.ConfigNum))
-  // Config
-  _, _ = f.WriteString(fmt.Sprintf("Config::%v\n", op.Config))
-  // ID
-  _, _ = f.WriteString(fmt.Sprintf("ID:%s\n", op.ID))
-  f.Close()
+func appendPaxosLog(enc *gob.Encoder, op Op, seq int) {
+  enc.Encode(seq)
+  enc.Encode(op)
 }
 
 func (kv *ShardKV) logPaxos() {
   current := 0
+  f, err := os.OpenFile(kv.paxosLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)  // note: file never closed
+  if err != nil {
+    log.Fatal(err)
+  }
+  kv.enc = gob.NewEncoder(f)
   for {
     if kv.horizon > current {
-      appendPaxosLog(kv.paxosLogFile, kv.localLog[current], current)
+      appendPaxosLog(kv.enc, kv.localLog[current], current)
       delete(kv.localLog, current)
       current++
     }
