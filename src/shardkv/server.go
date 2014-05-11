@@ -16,6 +16,7 @@ import "strconv"
 import "strings"
 
 const Debug=0
+const Network="unix"
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -440,7 +441,7 @@ func StartServer(gid int64, shardmasters []string,
 
 
   os.Remove(servers[me])
-  l, e := net.Listen("unix", servers[me]);
+  l, e := net.Listen(Network, servers[me]);
   if e != nil {
     log.Fatal("listen error: ", e);
   }
