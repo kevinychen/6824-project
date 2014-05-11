@@ -13,8 +13,6 @@ import "math/rand"
 import "sort"
 import "time"
 
-var Network = "unix"
-
 type ShardMaster struct {
   logLock sync.Mutex
   execLock sync.Mutex

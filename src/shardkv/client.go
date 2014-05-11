@@ -57,7 +57,7 @@ func MakeClerk(shardmasters []string) *Clerk {
 //
 func call(srv string, rpcname string,
           args interface{}, reply interface{}) bool {
-  c, errx := rpc.Dial("unix", srv)
+  c, errx := rpc.Dial(Network, srv)
   if errx != nil {
     return false
   }
