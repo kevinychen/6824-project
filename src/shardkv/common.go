@@ -19,6 +19,12 @@ const (
 )
 type Err string
 
+type KVPair struct {
+  shard int
+  key string
+  value string
+}
+
 type PutArgs struct {
   Key string
   Value string
