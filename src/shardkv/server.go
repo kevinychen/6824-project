@@ -17,10 +17,6 @@ import "strings"
 
 const Debug=0
 
-const (
-  END_OP = "END_OPERATION"
-)
-
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
     log.Printf(format, a...)
@@ -101,13 +97,62 @@ func makeStandardUndoLog(seq int, key, value, clientid string, result ClientRepl
 
 func (kv *ShardKV) appendOperation(op Op) {
   kv.enc.Encode(op)
-  kv.enc.Encode(END_OP)
   kv.logFile.Sync()
 }
 
 func (kv *ShardKV) appendUndoInfo(info UndoInfo) {
   kv.enc.Encode(info)
   kv.logFile.Sync()
+}
+
+func (kv *ShardKV) rollback(info UndoInfo) {
+  // Reconfigure case: revert to previous snapshot
+  if info.IsReconfigure {
+    desiredConfig := info.Config.Num
+    _ = desiredConfig
+    // TODO: Load all state from snapshot at desiredConfig
+  } else { // Standard Case: roll back a single operation
+
+    // TODO: Reset the appropriate values
+    // storage[key] = value
+    // dedup[clientID] = result
+    key := info.Key
+    value := info.Value
+    clientID := info.ClientID
+    result := info.Result
+    _ = key
+    _ = value
+    _ = clientID
+    _ = result
+  }
+}
+
+// CALL UNDER LOCK
+func (kv *ShardKV) loadLog() {
+  f, err := os.OpenFile(kv.logFilename, os.O_RDONLY, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  dec := gob.NewDecoder(f)
+  for {
+    undoInfo := UndoInfo{}
+    err = dec.Decode(&undoInfo)
+    if err != nil {
+      // Clean end, no invalidation necessary
+      break
+    }
+    operation := Op{}
+    err = dec.Decode(&operation)
+    if err != nil {
+      // Unclean ending, need to rollback
+      kv.rollback(undoInfo)
+      break
+    }
+  }
+}
+
+func (kv *ShardKV) Recover() {
+
 }
 
 // Shouldn't be used
