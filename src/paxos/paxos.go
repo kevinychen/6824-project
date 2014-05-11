@@ -132,6 +132,10 @@ func (px *Paxos) getDecisionFile() string {
   return fmt.Sprintf("%s/decision.log", px.logPath)
 }
 
+func (px *Paxos) getMaxFile() string {
+  return fmt.Sprintf("%s/max.log", px.logPath)
+}
+
 func (px *Paxos) initializeEncoder() {
   filename := px.getDecisionFile()
   var err error
@@ -157,6 +161,17 @@ func (px *Paxos) logInstance(seq int, state InstanceState) {
   }
   enc := gob.NewEncoder(f)
   enc.Encode(state)
+  f.Close()
+}
+
+func (px *Paxos) logMax() {
+  filename := px.getMaxFile()
+  f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0666)
+  if err != nil {
+    log.Fatal(err)
+  }
+  enc := gob.NewEncoder(f)
+  enc.Encode(px.maxSequenceN)
   f.Close()
 }
 
@@ -201,10 +216,20 @@ func (px *Paxos) loadDecision() {
   }
 }
 
+func (px *Paxos) loadMax() {
+  filename := px.getMaxFile()
+  f, err := os.OpenFile(filename, os.O_RDONLY, 0666)
+  if err == nil {
+    dec := gob.NewDecoder(f)
+    dec.Decode(&px.maxSequenceN)
+  }
+}
+
 // Call under Lock
 func (px *Paxos) Recover() {
   px.loadInstances()
   px.loadDecision()
+  px.loadMax()
 }
 
 // END PERSISTENCE
@@ -462,6 +487,7 @@ func (px *Paxos) Start(seq int, v interface{}) {
   px.mu.Lock()
   if seq > px.maxSequenceN {
     px.maxSequenceN = seq
+    px.logMax()
   }
   px.mu.Unlock()
   go px.doPropose(seq, v)
@@ -564,6 +590,25 @@ func (px *Paxos) Kill() {
   if px.l != nil {
     px.l.Close()
   }
+}
+
+// Simulate loss of memory
+func (px *Paxos) HardReset() {
+  px.mu.Lock()
+  px.instanceMutex.Lock()
+  defer px.mu.Unlock()
+  defer px.instanceMutex.Unlock()
+
+  px.instances = make(map[int]Instance)
+  px.maxProposalNs = make(map[int]int64)
+  px.maxAcceptNs = make(map[int]int64)
+  px.maxAcceptVs = make(map[int]interface{})
+
+  px.maxSequenceN = 0
+  for z := 0; z < len(px.peers); z++ {
+    px.minSeqNums[z] = -1
+  }
+  px.Recover()
 }
 
 //
