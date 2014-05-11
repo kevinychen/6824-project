@@ -93,6 +93,7 @@ func (sm *ShardMaster) logPaxos() {
   for {
     if sm.horizon > current {
       appendPaxosLog(sm.enc, sm.localLog[current], current)
+      f.Sync()
       delete(sm.localLog, current)
       current++
     }

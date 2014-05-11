@@ -90,6 +90,7 @@ func (kv *ShardKV) logPaxos() {
   for {
     if kv.horizon > current {
       appendPaxosLog(kv.enc, kv.localLog[current], current)
+      f.Sync()
       delete(kv.localLog, current)
       current++
     }
