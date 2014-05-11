@@ -20,6 +20,7 @@ package paxos
 // px.Min() int -- instances before this seq have been forgotten
 //
 
+import "encoding/gob"
 import "net"
 import "net/rpc"
 import "log"
@@ -29,7 +30,16 @@ import "sync"
 import "fmt"
 import "math/rand"
 import "time"
+import crand "crypto/rand"
+import "strconv"
+import "math/big"
 
+func randStr() string {
+  max := big.NewInt(int64(1) << 62)
+  bigx, _ := crand.Int(crand.Reader, max)
+  x := bigx.Int64()
+  return strconv.FormatInt(x, 10)
+}
 
 type PrepareArgs struct {
   SequenceNumber int
@@ -71,6 +81,12 @@ type Instance struct {
   Value interface{}
 }
 
+type InstanceState struct {
+  MaxPn int64
+  MaxAn int64
+  MaxAv interface{}
+}
+
 type Paxos struct {
   mu sync.Mutex
   l net.Listener
@@ -79,8 +95,8 @@ type Paxos struct {
   rpcCount int
   peers []string
   me int // index into peers[]
-  logDecisionFile string
-  logInstanceFileRoot string
+  UID string
+  logFileName string
 
 
   // Your data here.
@@ -93,18 +109,30 @@ type Paxos struct {
   instanceMutex sync.Mutex
 }
 
+
+
 // PERSISTENCE
 
 func (px *Paxos) logDecision(seq int, decidedValue interface{}) {
-    filename := fmt.Sprintf("%s.decision.log", px.logDecisionFile)
-    _ = filename
-
+    filename := fmt.Sprintf("logs/decision.%s.log", px.logFileName)
+    f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+    if err != nil {
+      log.Fatal(err)
+    }
+    enc := gob.NewEncoder(f)
+    enc.Encode(decidedValue)
+    f.Sync()
 }
 
-func (px *Paxos) logInstance(seq int, maxNp, maxNa int64, maxVa interface{}) {
-    filename := fmt.Sprintf("%s.instance.seq%d.log", px.logInstanceFileRoot, seq)
-    _ = filename
-
+func (px *Paxos) logInstance(seq int, state InstanceState) {
+    filename := fmt.Sprintf("logs/instance.%s.seq%d.log", px.logFileName, seq)
+    f, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0666)
+    if err != nil {
+      log.Fatal(err)
+    }
+    enc := gob.NewEncoder(f)
+    enc.Encode(state)
+    f.Sync()
 }
 
 // Call under LOCK, puts directly into maps
@@ -187,8 +215,8 @@ func (px *Paxos) doPrepare(args *PrepareArgs) *PrepareReply {
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, px.maxProposalNs[seq], 
-    px.maxAcceptNs[seq], px.maxAcceptVs[seq])
+  px.logInstance(seq, InstanceState{px.maxProposalNs[seq], 
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
   // Release acceptor state lock
   px.mu.Unlock()
   return reply
@@ -219,8 +247,8 @@ func (px *Paxos) doAccept(args *AcceptArgs) *AcceptReply {
   }
   reply.MinSequence = px.minSeqNums[px.me]
   // Persist state
-  px.logInstance(seq, px.maxProposalNs[seq], 
-    px.maxAcceptNs[seq], px.maxAcceptVs[seq])
+  px.logInstance(seq, InstanceState{px.maxProposalNs[seq], 
+    px.maxAcceptNs[seq], px.maxAcceptVs[seq]})
   px.mu.Unlock()
   return reply
 }
@@ -470,10 +498,13 @@ func (px *Paxos) Kill() {
 // are in peers[]. this servers port is peers[me].
 //
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
+
   px := &Paxos{}
   px.peers = peers
   px.me = me
   fmt.Printf("peers: %v\n", px.peers)
+  px.UID = randStr()
+  px.logFileName = "me-" + px.UID
 
 
   // Your initialization code here.

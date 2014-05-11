@@ -435,7 +435,6 @@ func StartServer(gid int64, shardmasters []string,
   kv.px = paxos.Make(servers, me, rpcs)
   kv.uid = strconv.FormatInt(nrand(), 10)
   kv.paxosLogFile = fmt.Sprintf("logs/paxos_log_%d_%d.log", kv.me, kv.gid)
-  os.Create(kv.paxosLogFile)
 
   go kv.logPaxos()
 
