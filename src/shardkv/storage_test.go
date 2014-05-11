@@ -122,11 +122,11 @@ func TestStorageSnapshots(t *testing.T) {
   }
   time.Sleep(3000 * time.Millisecond)
 
-  storage.CreateSnapshot(1)
+  storage.CreateSnapshot(1, map[string]ClientReply{})
 
   time.Sleep(3000 * time.Millisecond)
 
-  piece := storage.ReadSnapshot(1, 1, 0, true)
+  piece, _ := storage.ReadSnapshotDB(1, 1, 0, true)
   for k, v := range piece {
     cacheval := storage.Get(k, 1)
     if v != cacheval {
