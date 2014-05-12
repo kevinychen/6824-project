@@ -15,7 +15,7 @@ import "shardmaster"
 import "strconv"
 import "strings"
 
-const Debug=0
+const Debug=1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -408,7 +408,7 @@ func (kv *ShardKV) TakeSnapshot(confignum int) {
     Counter:value.Counter}
   }*/
 
-  kv.storage.CreateSnapshot(confignum, kv.current.dedup)
+  kv.storage.CreateSnapshot(kv.configNum, kv.current.dedup)
   kv.configNum = confignum
 }
 
