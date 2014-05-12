@@ -15,7 +15,7 @@ import "shardmaster"
 import "strconv"
 import "strings"
 
-const Debug=0
+const Debug=1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -251,6 +251,8 @@ func (kv *ShardKV) Grab(args *GrabArgs, reply *GrabReply) error {
 
 // Locked
 func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
+  fmt.Println("Started shard ask")
+  defer fmt.Println("Finished shard ask")
   for !kv.dead {
     if configNum == 0 {
       return
@@ -288,6 +290,7 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
               kv.storage.Put(key, value, false, shard)
             }
             index++
+            break
           }
         }
       }
@@ -298,6 +301,8 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
 }
 
 func (kv *ShardKV) AskForDedup(gid int64, configNum int) {
+  DPrintf("Asking for dedup sync from group %v, config %v", gid, configNum)
+  defer DPrintf("Finished dedup sync from group %v, config %v", gid, configNum)
   for !kv.dead {
     if configNum == 0 {
       return
@@ -326,6 +331,8 @@ func (kv *ShardKV) AskForDedup(gid int64, configNum int) {
 
 // Locked
 func (kv *ShardKV) SyncShards(configNum int) {
+  fmt.Println("Started sync")
+  defer fmt.Println("Finished sync")
   prevConfig := kv.configs[configNum - 1]
   newConfig := kv.configs[configNum]
   seenGroups := make(map[int64]bool)
@@ -400,6 +407,7 @@ func (kv *ShardKV) TakeSnapshot(confignum int) {
     Counter:value.Counter}
   }*/
 
+  DPrintf("Taking snapshot at group %v machine %v", kv.gid, kv.me) 
   kv.storage.CreateSnapshot(confignum, kv.current.dedup)
   kv.configNum = confignum
 }
@@ -430,6 +438,7 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
 
   if op.Type == "Put" {
     prev := kv.storage.Put(key, val, doHash, shardNum)
+    fmt.Println("Yup")
     kv.results[id] = ClientReply{Value:prev, Err:OK, Counter:counter}
     kv.current.dedup[clientID] = ClientReply{Value:prev, Counter: counter, Err:OK}
   } else if op.Type == "Reconfigure" {

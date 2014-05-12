@@ -8,7 +8,7 @@ import "strconv"
 import "time"
 import "fmt"
 //import "sync"
-//import "math/rand"
+import "math/rand"
 
 func TestCacheBasic(t *testing.T) {
   fmt.Printf("Test: Cache Basic Put/Get\n")
@@ -120,13 +120,18 @@ func TestStorageSnapshots(t *testing.T) {
   for i := 0; i < numPuts; i++ {
     storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1)
   }
-  time.Sleep(3000 * time.Millisecond)
 
-  storage.CreateSnapshot(1, map[string]ClientReply{})
-
-  time.Sleep(3000 * time.Millisecond)
+  configNum := 1
+  dedup := make(map[string]ClientReply)
+  dedup["what"] = ClientReply{Value: "wheat", Err: ErrWrongGroup, Counter: 47}
+  dedup["gogo"] = ClientReply{Value: "hobo", Err: OK, Counter: 9001}
+  dedup["bubbles"] = ClientReply{Value: "gorgonzola", Err: ErrNoKey, Counter: 9999999}
+  dedup["hackey"] = ClientReply{Value: "chocolate", Err: OK, Counter: 1}
+  dedup["socks"] = ClientReply{Value: "stinky", Err: OK, Counter: 476}
+  storage.CreateSnapshot(configNum, dedup)
 
   piece, _ := storage.ReadSnapshotDB(1, 1, 0, true)
+  storage.ReadSnapshotDedup(1)
   for k, v := range piece {
     cacheval := storage.Get(k, 1)
     if v != cacheval {
@@ -135,7 +140,127 @@ func TestStorageSnapshots(t *testing.T) {
   }
 
   time.Sleep(3000 * time.Millisecond)
-  
+
   storage.closeDBConnection()
+  fmt.Printf(" ... Passed\n")
+}
+
+func TestStorageHeavy(t *testing.T) {
+  fmt.Printf("Test: All Storage Operations, Heavy\n")
+
+  storage := MakeStorage(10000, "127.0.0.1:27017")
+  storage.Clear()
+
+  numPuts := 200
+  numGets := 200
+  
+  for i := 0; i < numPuts; i++ {
+    rando := int(rand.Int31n(15000))
+    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 1)
+  }
+  for i := 0; i < numPuts; i++ {
+    storage.Put(strconv.Itoa(7 * i), strconv.Itoa(49 * i * i), false, 1)
+  }
+
+  time.Sleep(15000 * time.Millisecond)
+  
+  for i := 0; i < numGets; i++ {
+    value := storage.Get(strconv.Itoa(7 * i), 1)
+    if value != strconv.Itoa(49 * i * i) {
+      t.Fatalf("Get got wrong value!; value=%v, expected=%v", value, strconv.Itoa(49 * i * i))
+    }
+  }
+
+  configNum := 1
+  dedup := make(map[string]ClientReply)
+  dedup["what"] = ClientReply{Value: "wheat", Err: ErrWrongGroup, Counter: 47}
+  dedup["gogo"] = ClientReply{Value: "hobo", Err: OK, Counter: 9001}
+  dedup["bubbles"] = ClientReply{Value: "gorgonzola", Err: ErrNoKey, Counter: 9999999}
+  dedup["hackey"] = ClientReply{Value: "chocolate", Err: OK, Counter: 1}
+  dedup["socks"] = ClientReply{Value: "stinky", Err: OK, Counter: 476}
+  storage.CreateSnapshot(configNum, dedup)
+
+  configNum++
+  for i := 0; i < numPuts; i++ {
+    rando := int(rand.Int31n(15000))
+    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 2)
+  }
+
+  dedup = make(map[string]ClientReply)
+  dedup["bobobo"] = ClientReply{Value: "hokeypokey", Err: OK, Counter: 4381094}
+  dedup["sesquicentennial"] = ClientReply{Value: "lackadaisical", Err: ErrWrongGroup, Counter: 329482903}
+  dedup["solo"] = ClientReply{Value: "teddygrahams", Err: ErrNoKey, Counter: 9999999}
+  dedup["hotpockets"] = ClientReply{Value: "kirakira", Err: OK, Counter: 1}
+  dedup["bilirubin"] = ClientReply{Value: "entimentity", Err: OK, Counter: 476}
+  storage.CreateSnapshot(configNum, dedup)
+
+  configNum++
+
+  finished := false
+  index := 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(1, 1, index, true)
+    finished = fin 
+    index++
+  }
+  
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(1, 1, index, false)
+    finished = fin 
+    index++
+  }
+
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(1, 2, index, true)
+    finished = fin 
+    index++
+  }
+  
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(1, 2, index, false)
+    finished = fin 
+    index++
+  }
+  
+  storage.ReadSnapshotDedup(1)
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(2, 1, index, true)
+    finished = fin
+    index++
+  }
+
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(2, 1, index, false)
+    finished = fin
+    index++
+  }
+
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(2, 2, index, true)
+    finished = fin
+    index++
+  }
+
+  finished = false
+  index = 0
+  for !finished {
+    _, fin := storage.ReadSnapshotDB(2, 2, index, false)
+    finished = fin
+    index++
+  }
+  storage.ReadSnapshotDedup(2)
+
   fmt.Printf(" ... Passed\n")
 }
