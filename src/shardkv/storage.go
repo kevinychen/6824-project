@@ -363,9 +363,9 @@ func (st *Storage) ReadSnapshotDB(confignum int, shardnum int, index int, cache 
   piece := make(map[string]string)
   results := []SnapshotKV{}
   if cache {
-    st.snapshots.Find(bson.M{"cache": "true", "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    st.snapshots.Find(bson.M{"cache": true, "config": confignum, "shard": shardnum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   } else {
-    st.snapshots.Find(bson.M{"cache": "false", "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    st.snapshots.Find(bson.M{"cache": false, "config": confignum, "shardnum": shardnum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   }
   for i := 0; i < len(results); i++ {
     piece[results[i].Key] = results[i].Value

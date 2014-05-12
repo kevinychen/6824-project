@@ -15,7 +15,7 @@ import "shardmaster"
 import "strconv"
 import "strings"
 
-const Debug=1
+const Debug=0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -218,6 +218,7 @@ func (kv *ShardKV) GetMaxSeq() int {
 // Locked
 func (kv *ShardKV) Pull(args *PullArgs, reply *PullReply) error {
   desiredConfig := args.ConfigNum
+  DPrintf("Received pull request for shard %v for config %v at group %v machine %v\n", args.Shard, args.ConfigNum, kv.gid, kv.me)
   for {
     kv.configLock.Lock()
     if kv.configNum > desiredConfig {
@@ -251,6 +252,7 @@ func (kv *ShardKV) Grab(args *GrabArgs, reply *GrabReply) error {
 
 // Locked
 func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
+  DPrintf("Asking for shard %v from %v for config %v at group %v machine %v\n", shard, gid, configNum, kv.gid, kv.me)
   for !kv.dead {
     if configNum == 0 {
       return
@@ -278,7 +280,7 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
             } else if reply.Finished && !cache {
               finished = true
             }
-            
+           
             // Pull state over
             for key, value := range reply.ShardMap {
               // not necessary due to storage handling
@@ -429,6 +431,9 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
     return
   }
 
+  if op.Type != "Reconfigure" {
+    DPrintf("Group %v servicing shard %v at config %v", kv.gid, shardNum, kvConfigNum) 
+  }
   clientID, counter := parseID(id)
   creply, _ := kv.current.dedup[clientID]
   if creply.Counter >= counter && creply.Counter > 0 {
