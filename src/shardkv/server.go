@@ -544,7 +544,9 @@ func StartServer(gid int64, shardmasters []string,
   kv.horizon = 0
   kv.configNum = -1
   kv.max = 0
-  kv.storage = MakeStorage(1000000000, "127.0.0.1:27017") // setup cell storage
+  // setup cell storage
+  kv.storage = MakeStorage(me, 1000000000, "127.0.0.1:27017")
+  kv.storage.Clear()
 
 
   kv.current = ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}

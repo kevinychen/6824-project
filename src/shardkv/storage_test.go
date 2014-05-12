@@ -91,7 +91,7 @@ func TestCacheOverflow(t *testing.T) {
 func TestStorageBasic(t *testing.T) {
   fmt.Printf("Test: Storage Basic Units\n")
 
-  storage := MakeStorage(200, "127.0.0.1:27017")
+  storage := MakeStorage(0, 200, "127.0.0.1:27017")
   storage.Clear()
 
   numPuts := 50
@@ -113,7 +113,7 @@ func TestStorageBasic(t *testing.T) {
 func TestStorageSnapshots(t *testing.T) {
   fmt.Printf("Test: Storage Snapshotting\n")
 
-  storage := MakeStorage(200, "127.0.0.1:27017")
+  storage := MakeStorage(0, 200, "127.0.0.1:27017")
   storage.Clear()
 
   numPuts := 50

@@ -185,6 +185,7 @@ func (cache *ShardCache) maintainSize() {
 
 type Storage struct {
   mu sync.Mutex
+  me int
 
   cache *ShardCache
 
@@ -216,9 +217,10 @@ func (st *Storage) connectToDiskDB(url string) {
   if err != nil {
     panic(err)
   }
-  st.db = st.dbSession.DB("db").C("kvstore")
-  st.snapshots = st.dbSession.DB("db").C("snapshots")
-  st.dedupsnaps = st.dbSession.DB("db").C("dedupsnaps")
+  meStr := strconv.Itoa(st.me)
+  st.db = st.dbSession.DB("db").C("kvstore" + meStr)
+  st.snapshots = st.dbSession.DB("db").C("snapshots" + meStr)
+  st.dedupsnaps = st.dbSession.DB("db").C("dedupsnaps" + meStr)
 }
 
 func (st *Storage) DBClear() {
@@ -239,8 +241,9 @@ func (st *Storage) Clear() {
   st.CacheClear()
 }
 
-func MakeStorage(capacity uint64, dbURL string) *Storage {
+func MakeStorage(me int, capacity uint64, dbURL string) *Storage {
   st := new(Storage)
+  st.me = me
   st.makeCache(capacity)
   st.connectToDiskDB(dbURL)
   st.writeLog = make(map[int]WriteOp)
