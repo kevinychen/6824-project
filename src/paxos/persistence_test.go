@@ -25,7 +25,7 @@ func TestBasicPersistence(t *testing.T) {
 
   fmt.Printf("Test: Persistent: Single proposer ...\n")
 
-  pxa[0].Start(0, "hello")
+  pxa[0].FastStart(0, "hello")
   waitn(t, pxa, 0, npaxos)
 
   // RESET
@@ -36,7 +36,7 @@ func TestBasicPersistence(t *testing.T) {
   fmt.Printf("Test: Persistent: Many proposers, same value ...\n")
 
   for i := 0; i < npaxos; i++ {
-    pxa[i].Start(1, 77)
+    pxa[i].FastStart(1, 77)
   }
   waitn(t, pxa, 1, npaxos)
 
@@ -44,21 +44,21 @@ func TestBasicPersistence(t *testing.T) {
 
   fmt.Printf("Test: Persistent: Many proposers, different values ...\n")
 
-  pxa[0].Start(2, 100)
-  pxa[1].Start(2, 101)
-  pxa[2].Start(2, 102)
+  pxa[0].FastStart(2, 100)
+  pxa[1].FastStart(2, 101)
+  pxa[2].FastStart(2, 102)
   waitn(t, pxa, 2, npaxos)
 
   fmt.Printf("  ... Passed\n")
 
   fmt.Printf("Test: Persistent: Out-of-order instances ...\n")
 
-  pxa[0].Start(7, 700)
-  pxa[0].Start(6, 600)
-  pxa[1].Start(5, 500)
+  pxa[0].FastStart(7, 700)
+  pxa[0].FastStart(6, 600)
+  pxa[1].FastStart(5, 500)
   waitn(t, pxa, 7, npaxos)
-  pxa[0].Start(4, 400)
-  pxa[1].Start(3, 300)
+  pxa[0].FastStart(4, 400)
+  pxa[1].FastStart(3, 300)
 
   // RESET
   pxa[0].HardReset()
@@ -98,20 +98,20 @@ func TestDeafPersistent(t *testing.T) {
 
   fmt.Printf("Test: Persistent: Deaf proposer ...\n")
 
-  pxa[0].Start(0, "hello")
+  pxa[0].FastStart(0, "hello")
   waitn(t, pxa, 0, npaxos)
 
   os.Remove(pxh[0])
   os.Remove(pxh[npaxos-1])
 
-  pxa[1].Start(1, "goodbye")
+  pxa[1].FastStart(1, "goodbye")
   waitmajority(t, pxa, 1)
   time.Sleep(1 * time.Second)
   if ndecided(t, pxa, 1) != npaxos - 2 {
     t.Fatalf("a deaf peer heard about a decision")
   }
 
-  pxa[0].Start(1, "xxx")
+  pxa[0].FastStart(1, "xxx")
 
   // RESET
   pxa[1].HardReset()
@@ -128,7 +128,7 @@ func TestDeafPersistent(t *testing.T) {
     t.Fatalf("a deaf peer heard about a decision")
   }
 
-  pxa[npaxos-1].Start(1, "yyy")
+  pxa[npaxos-1].FastStart(1, "yyy")
 
   // RESET ALL BUT 1
   for i := 0; i < npaxos - 1; i++ {
@@ -165,11 +165,11 @@ func TestForgetPersistent(t *testing.T) {
     }
   }
 
-  pxa[0].Start(0, "00")
-  pxa[1].Start(1, "11")
-  pxa[2].Start(2, "22")
-  pxa[0].Start(6, "66")
-  pxa[1].Start(7, "77")
+  pxa[0].FastStart(0, "00")
+  pxa[1].FastStart(1, "11")
+  pxa[2].FastStart(2, "22")
+  pxa[0].FastStart(6, "66")
+  pxa[1].FastStart(7, "77")
 
   waitn(t, pxa, 0, npaxos)
 
@@ -199,7 +199,7 @@ func TestForgetPersistent(t *testing.T) {
     pxa[i].Done(1)
   }
   for i := 0; i < npaxos; i++ {
-    pxa[i].Start(8 + i, "xx")
+    pxa[i].FastStart(8 + i, "xx")
   }
   allok := false
   for iters := 0; iters < 12; iters++ {
@@ -242,7 +242,7 @@ func TestRPCCountPersistent(t *testing.T) {
   ninst1 := 5
   seq := 0
   for i := 0; i < ninst1; i++ {
-    pxa[0].Start(seq, "x")
+    pxa[0].FastStart(seq, "x")
     waitn(t, pxa, seq, npaxos)
 
     // RESET
@@ -265,14 +265,14 @@ func TestRPCCountPersistent(t *testing.T) {
   // 3 decides
   expected1 := ninst1 * npaxos * npaxos
   if total1 > expected1 {
-    t.Fatalf("too many RPCs for serial Start()s; %v instances, got %v, expected %v",
+    t.Fatalf("too many RPCs for serial FastStart()s; %v instances, got %v, expected %v",
       ninst1, total1, expected1)
   }
 
   ninst2 := 5
   for i := 0; i < ninst2; i++ {
     for j := 0; j < npaxos; j++ {
-      go pxa[j].Start(seq, j + (i * 10))
+      go pxa[j].FastStart(seq, j + (i * 10))
     }
     waitn(t, pxa, seq, npaxos)
     seq++
@@ -296,7 +296,7 @@ func TestRPCCountPersistent(t *testing.T) {
   // Proposer 3: 3 prep, 3 acc, 3 prep, 3 acc, 3 prep, 3 acc, 3 decides.
   expected2 := ninst2 * npaxos * 15
   if total2 > expected2 {
-    t.Fatalf("too many RPCs for concurrent Start()s; %v instances, got %v, expected %v",
+    t.Fatalf("too many RPCs for concurrent FastStart()s; %v instances, got %v, expected %v",
       ninst2, total2, expected2)
   }
 
@@ -321,7 +321,7 @@ func TestManyPersistent(t *testing.T) {
   }
   for i := 0; i < npaxos; i++ {
     pxa[i] = Make(pxh, i, nil)
-    pxa[i].Start(0, 0)
+    pxa[i].FastStart(0, 0)
   }
 
   const ninst = 50
@@ -332,7 +332,7 @@ func TestManyPersistent(t *testing.T) {
       time.Sleep(20 * time.Millisecond)
     }
     for i := 0; i < npaxos; i++ {
-      pxa[i].Start(seq, (seq * 10) + i)
+      pxa[i].FastStart(seq, (seq * 10) + i)
     }
     // RESET
     pxa[(seq + 0) % npaxos].HardReset()
@@ -381,7 +381,7 @@ func TestOldPersistent(t *testing.T) {
   pxa[1] = Make(pxh, 1, nil)
   pxa[2] = Make(pxh, 2, nil)
   pxa[3] = Make(pxh, 3, nil)
-  pxa[1].Start(1, 111)
+  pxa[1].FastStart(1, 111)
 
   waitmajority(t, pxa, 1)
 
@@ -390,7 +390,7 @@ func TestOldPersistent(t *testing.T) {
   pxa[2].HardReset()
   pxa[3].HardReset()
 
-  pxa[0].Start(1, 222)
+  pxa[0].FastStart(1, 222)
 
   waitn(t, pxa, 1, 4)
 
@@ -402,7 +402,7 @@ func TestOldPersistent(t *testing.T) {
 
   if true {
     pxa[4] = Make(pxh, 4, nil)
-    pxa[0].Start(1, 333)
+    pxa[0].FastStart(1, 333)
     waitn(t, pxa, 1, npaxos)
     ndecided(t, pxa, 1)
   }
@@ -429,7 +429,7 @@ func TestManyUnreliablePersistent(t *testing.T) {
   for i := 0; i < npaxos; i++ {
     pxa[i] = Make(pxh, i, nil)
     pxa[i].unreliable = true
-    pxa[i].Start(0, 0)
+    pxa[i].FastStart(0, 0)
   }
 
   const ninst = 50
@@ -440,7 +440,7 @@ func TestManyUnreliablePersistent(t *testing.T) {
       time.Sleep(20 * time.Millisecond)
     }
     for i := 0; i < npaxos; i++ {
-      pxa[i].Start(seq, (seq * 10) + i)
+      pxa[i].FastStart(seq, (seq * 10) + i)
     }
 
     pxa[((seq * 7 + 9) % 13) % npaxos].HardReset()
@@ -490,7 +490,7 @@ func TestPartitionPersistent(t *testing.T) {
   fmt.Printf("Test: Persistent: No decision if partitioned ...\n")
 
   part(t, tag, npaxos, []int{0,2}, []int{1,3}, []int{4})
-  pxa[1].Start(seq, 111)
+  pxa[1].FastStart(seq, 111)
   // RESET
   pxa[0].HardReset()
   pxa[2].HardReset()
@@ -519,9 +519,9 @@ func TestPartitionPersistent(t *testing.T) {
   pxa[2].HardReset()
   pxa[0].HardReset()
 
-  pxa[0].Start(seq, 1000) // poke them
+  pxa[0].FastStart(seq, 1000) // poke them
 
-  pxa[4].Start(seq, 1004)
+  pxa[4].FastStart(seq, 1004)
 
 
   part(t, tag, npaxos, []int{0,1,2,3,4}, []int{}, []int{})
@@ -538,8 +538,8 @@ func TestPartitionPersistent(t *testing.T) {
     seq++
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
-    pxa[0].Start(seq, seq * 10)
-    pxa[3].Start(seq, (seq * 10) + 1)
+    pxa[0].FastStart(seq, seq * 10)
+    pxa[3].FastStart(seq, (seq * 10) + 1)
 
 
     waitmajority(t, pxa, seq)
@@ -574,7 +574,7 @@ func TestPartitionPersistent(t *testing.T) {
 
     part(t, tag, npaxos, []int{0,1,2}, []int{3,4}, []int{})
     for i := 0; i < npaxos; i++ {
-      pxa[i].Start(seq, (seq * 10) + i)
+      pxa[i].FastStart(seq, (seq * 10) + i)
     }
   // RESET
   pxa[0].HardReset()
@@ -665,7 +665,7 @@ func TestLotsPersistent(t *testing.T) {
       }
       if seq - nd < 10 {
         for i := 0; i < npaxos; i++ {
-          pxa[i].Start(seq, rand.Int() % 10)
+          pxa[i].FastStart(seq, rand.Int() % 10)
         }
         seq++
       }
