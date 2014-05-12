@@ -335,6 +335,12 @@ func (kv *ShardKV) SyncShards(configNum int) {
   defer fmt.Println("Finished sync")
   prevConfig := kv.configs[configNum - 1]
   newConfig := kv.configs[configNum]
+
+  DPrintf("Pre-Sync Snapshot at Group %v Server %v\n", kv.gid, kv.me)
+  if Debug != 0 {
+    kv.storage.PrintSnapshot(configNum - 1)
+  }
+
   seenGroups := make(map[int64]bool)
   for shard, group := range newConfig.Shards {
     // new shard we don't have
@@ -348,6 +354,7 @@ func (kv *ShardKV) SyncShards(configNum int) {
       kv.AskForShard(prevConfig.Shards[shard], configNum - 1, shard)
     }
   }
+
 }
 
 // Call Under Lock

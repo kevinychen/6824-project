@@ -310,11 +310,39 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
   return prev
 }
 
+func (st *Storage) PrintSnapshot(confignum int) {
+  results := []SnapshotKV{}
+  index := 0
+  fmt.Printf("Printing Config %v Snapshot\n", confignum)
+  for len(results) >= GrabSize {
+    st.snapshots.Find(bson.M{"cache": true, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    for i := 0; i < len(results); i++ {
+      fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, true)
+    }
+    index++
+  }
+  results = []SnapshotKV{}
+  index = 0
+  for len(results) >= GrabSize {
+    st.snapshots.Find(bson.M{"cache": false, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    for i := 0; i < len(results); i++ {
+      fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, false)
+    }
+    index++
+  }
+  fmt.Printf("Printing Config %v Snapshot Dedup\n", confignum)
+  cresults := []SnapshotDedup{}
+  st.dedupsnaps.Find(bson.M{}).All(&cresults)
+  for i := 0; i < len(cresults); i++ {
+    fmt.Printf("Key: %v, Value: %v, Err: %v, Counter: %v\n", cresults[i].Key, cresults[i].Value, cresults[i].Err, cresults[i].Counter)
+  }
+}
+
 func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
   cachedata := st.cache.KVPairs()
   results := []KVPair{}
   index := 0
-  for len(results) >= 100 {
+  for len(results) >= GrabSize {
     st.db.Find(bson.M{}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
       st.db.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
