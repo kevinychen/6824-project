@@ -14,9 +14,10 @@ import "math/rand"
 import "shardmaster"
 import "strconv"
 import "strings"
-import "bytes"
+import "oblivious"
+//import "bytes"
 
-const Debug=1
+const Debug=0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
   if Debug > 0 {
@@ -72,6 +73,7 @@ type ShardKV struct {
   logFile *os.File
   logFilename string
   enc *gob.Encoder
+  Replica string
 
   // cell storage management
   storage *Storage
@@ -93,13 +95,54 @@ type Op struct {
 
 
 func (kv *ShardKV) forwardOperation(seq int, op Op) {
+  if kv.Replica == "" {
+    return
+  }
+
   key := []byte("a very very very very secret key")
   oper := OpWithSeq{seq, op}
   entry := gobEncodeBase64(oper)
-  hash := GetMD5Hash(entry)
+  encryption := encodeBase64(encrypt(key, []byte(entry)))
+  hash := GetMD5Hash(encryption)
 
-  backup := BackupEntry struct {
+  kv.sm.StoreHash(seq, hash)
+
+  args := oblivious.LogArgs{hash, entry}
+  reply := oblivious.LogReply{}
+  _ = call(kv.Replica, "ObliviousReplica.Log", &args, &reply)
+}
+
+// CALL UNDER LOCK
+func (kv *ShardKV) obliviousRecovery() {
+  key := []byte("a very very very very secret key")
+  hashMap := kv.sm.List()
+  opMap := make(map[int]OpWithSeq)
+
+  max := 0
+
+  for seq, hash := range hashMap {
+    args := oblivious.LoadArgs{hash}
+    reply := oblivious.LoadReply{}
+    _ = call(kv.Replica, "ObliviousReplica.Load", &args, &reply)
+    decryption := decrypt(key, []byte(reply.Entry))
+
+    result := gobDecodeBase64(decryption)
+    opMap[seq] = result
+    if seq > max {
+      max = seq
+    }
   }
+
+  kv.resetState()
+
+  for i := kv.horizon; i <= max; i++ {
+    opWithSeq, ok := opMap[i]
+    if !ok {
+      break
+    }
+    kv.ApplyOp(opWithSeq.Operation, i)
+  }
+  kv.horizon = max
 }
 // END OBLIVIOUS REPLICATION
 
@@ -233,6 +276,7 @@ func (kv *ShardKV) GetMaxSeq() int {
 // Locked
 func (kv *ShardKV) Pull(args *PullArgs, reply *PullReply) error {
   desiredConfig := args.ConfigNum
+  DPrintf("Received pull request for shard %v for config %v at group %v machine %v\n", args.Shard, args.ConfigNum, kv.gid, kv.me)
   for {
     kv.configLock.Lock()
     if kv.configNum > desiredConfig {
@@ -266,6 +310,7 @@ func (kv *ShardKV) Grab(args *GrabArgs, reply *GrabReply) error {
 
 // Locked
 func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
+  DPrintf("Asking for shard %v from %v for config %v at group %v machine %v\n", shard, gid, configNum, kv.gid, kv.me)
   for !kv.dead {
     if configNum == 0 {
       return
@@ -293,7 +338,7 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
             } else if reply.Finished && !cache {
               finished = true
             }
-            
+           
             // Pull state over
             for key, value := range reply.ShardMap {
               // not necessary due to storage handling
@@ -444,6 +489,9 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
     return
   }
 
+  if op.Type != "Reconfigure" {
+    DPrintf("Group %v servicing shard %v at config %v", kv.gid, shardNum, kvConfigNum) 
+  }
   clientID, counter := parseID(id)
   creply, _ := kv.current.dedup[clientID]
   if creply.Counter >= counter && creply.Counter > 0 {
@@ -532,6 +580,19 @@ func (kv *ShardKV) Kill() {
   kv.dead = true
   kv.l.Close()
   kv.px.Kill()
+}
+
+func (kv *ShardKV) resetState() {
+  kv.localLog = make(map[int]Op)
+  kv.Counter = 1
+  kv.horizon = 0
+  kv.configNum = -1
+  kv.max = 0
+
+  kv.current = ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}
+  kv.results = make(map[string]ClientReply)
+  kv.configs = make(map[int]shardmaster.Config)
+  kv.configs[-1] = shardmaster.Config{}
 }
 
 //

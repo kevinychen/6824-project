@@ -118,3 +118,29 @@ func (ck *Clerk) Move(shard int, gid int64) {
     time.Sleep(100 * time.Millisecond)
   }
 }
+
+func (ck *Clerk) List() map[int]string {
+  // no actually a map of hashes for real
+  hashMap := make(map[int]string)
+  // try each known server.
+  for _, srv := range ck.servers {
+    args := &ListArgs{}
+    var reply ListReply
+    ok := call(srv, "ShardMaster.List", args, &reply)
+    if ok {
+      for key, value := range reply.Hashes {
+        hashMap[key] = value
+      }
+    }
+  }
+  return hashMap
+}
+
+func (ck *Clerk) StoreHash(seq int, hash string) {
+  // try each known server once
+  for _, srv := range ck.servers {
+    args := StoreHashArgs{seq, hash}
+    var reply StoreHashReply
+    _ = call(srv, "ShardMaster.StoreHash", &args, &reply)
+  }
+}
