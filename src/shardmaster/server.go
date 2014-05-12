@@ -75,8 +75,6 @@ type Op struct {
 
 // Call under Lock
 func (sm *ShardMaster) RecoverFromLog() {
-  fmt.Printf("ME: %d\n", sm.me)
-  fmt.Println("+++++++++++++++++++++++++++++++++++++++++++++++++")
   sm.SyncUntil(sm.px.Max())
 }
 
@@ -194,20 +192,9 @@ func (sm *ShardMaster) ApplyJoin(GID int64, Servers []string) {
   newCon := copyConfig(sm.configs[sm.maxConfigNum])
   newCon.Num++
   newCon.Groups[GID] = Servers
-  for i, v := range newCon.Shards {
-    if v == 0 {
-      newCon.Shards[i] = GID
-    }
-  }
-  for {
-    minGroup, minCount := getMin(newCon)
-    _, maxCount, lastShard := getMax(newCon)
-    if maxCount - minCount < 2 {
-      break
-    }
-    newCon.Shards[lastShard] = minGroup
-  }
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
   sm.configs = append(sm.configs, newCon)
+  DPrintf("%d JOIN %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
   sm.maxConfigNum++
 }
 
@@ -215,28 +202,9 @@ func (sm *ShardMaster) ApplyLeave(GID int64) {
   newCon := copyConfig(sm.configs[sm.maxConfigNum])
   newCon.Num++
   delete(newCon.Groups, GID)
-  var randomGroup int64
-
-  for k, _ := range newCon.Groups {
-    randomGroup = k
-    break
-  }
-
-  for i, v := range newCon.Shards {
-    if v == GID {
-      newCon.Shards[i] = randomGroup
-    }
-  }
-
-  for {
-    minGroup, minCount := getMin(newCon)
-    _, maxCount, lastShard := getMax(newCon)
-    if maxCount - minCount < 2 {
-      break
-    }
-    newCon.Shards[lastShard] = minGroup
-  }
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
   sm.configs = append(sm.configs, newCon)
+  DPrintf("%d LEAVE %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
   sm.maxConfigNum++
 }
 
@@ -266,30 +234,30 @@ func (sm *ShardMaster) ApplyOp(op Op, seqNum int) {
 
 // Sync method, must be LOCKED
 func (sm *ShardMaster) SyncUntil(seqNum int) {
-  fmt.Printf("ME: %s, NEW SYNC CALL, horizon: %d\n", sm.id, sm.horizon)
+  DPrintf("%d Start SYNC: %d\n", sm.me, sm.horizon)
   for i := sm.horizon; i <= seqNum; i++ {
     decided, _ := sm.px.Status(sm.horizon)
     if !decided {
       noOp := Op{"Query", "noopID", 0, make([]string, 0), 0, 0}
-      sm.px.Start(i, noOp)
+      sm.px.SlowStart(i, noOp)
     }
     decidedOp := sm.PollDecidedValue(i)
-    fmt.Printf("ME: %s, Applying : %d, %v\n", sm.id, i, decidedOp)
 //    sm.localLog[seqNum] = decidedOp
+    DPrintf("Seq %d: ", i)
     sm.ApplyOp(decidedOp, i)
   }
   if sm.horizon <= seqNum + 1 {
     sm.horizon = seqNum + 1;
   }
   sm.CallSafeDone()
-  fmt.Printf("ME: %s, END SYNC CALL, horizon: %d\n", sm.id, sm.horizon)
+  DPrintf("%d End SYNC: %d\n", sm.me, sm.horizon)
 }
 
 func (sm *ShardMaster) ProposeOp(op Op) (Op, int) {
   for !sm.dead {
     sm.mu.Lock()
     seq := sm.px.Max() + 1
-    sm.px.Start(seq, op)
+    sm.px.FastStart(seq, op)
     sm.openRequests[op.ID] = seq
     sm.mu.Unlock()
 
@@ -365,40 +333,15 @@ func (sm *ShardMaster) Kill() {
 }
 
 func (sm *ShardMaster) reset() {
-  horizon := sm.horizon
-  maxconf := sm.maxConfigNum
-
-  fmt.Printf("horizon: %d, maxconf: %d\n", horizon, maxconf)
-//  fmt.Printf("%v\n", sm.localLog)
-//  fmt.Printf("%v\n", sm.configs)
-
-  length := len(sm.configs)
-
-//  sm.localLog = make(map[int]Op)
   sm.configs = make([]Config, 1)
   sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
 
-//  sm.openRequests = make(map[string]int)
   sm.horizon = 0
   sm.maxConfigNum = 0
 
-  sm.RecoverFromLog() 
-  fmt.Printf("ME: %d\n", sm.me)
-  fmt.Println("======================================")
-
-//  fmt.Printf("%v\n", sm.localLog)
-//  fmt.Printf("%v\n", sm.configs)
-
-    fmt.Printf("Interesting, old: %d, new: %d\n", horizon, sm.horizon)
-    fmt.Printf("CONFIGS, old: %d, new: %d\n", maxconf, sm.maxConfigNum)
-    fmt.Printf("LENGTH, old: %d, new: %d\n", length, len(sm.configs))
-/*
-  if horizon != sm.horizon {
-  }
-  if maxconf != sm.maxConfigNum {
-    fmt.Println("WHAT THE HECK MANE WHAT")
-  }
-  */
+  sm.RecoverFromLog()
 }
 
 func (sm *ShardMaster) HardReset() {
@@ -439,23 +382,66 @@ func (sm *ShardMaster) HardReset() {
   
   _ = fakeHorizon
   _ = fakeMaxConfigNum
-  fmt.Printf("testing\n")
   for i, value := range fakeConfigs {
-    v1 := fmt.Sprintf("%v", value)
-    v2 := fmt.Sprintf("%v", fakeConfigs[i])
 //    if v1 != v2 {
 //    if value.Shards != fakeConfigs[i].Shards {
-    if reflect.DeepEqual(value, fakeConfigs[i]) {
-      fmt.Printf("%s COMPARE TO %s\n", v1, v2)
+    if !reflect.DeepEqual(value, sm.configs[i]) {
+      fmt.Printf("%v COMPARE TO %v\n", value, sm.configs[i])
       log.Fatal("")
     }
   }
 //  sm.configs = fakeConfigs
-  fmt.Printf("after %v\n", sm.configs)
   sm.localLog = fakeLog
   sm.openRequests = fakeRequests
   sm.horizon = fakeHorizon
   sm.maxConfigNum = fakeMaxConfigNum
+}
+
+// Distribute shards among groups, minimizing shard movement
+func distributeShards(Shards [NShards]int64, Groups map[int64][]string) [NShards]int64 {
+  nGroups := len(Groups)
+  shardsPerGroup := NShards / nGroups
+  if shardsPerGroup < 1 { // at least 1 shard per group
+    shardsPerGroup = 1
+  }
+  shardCounts := make(map[int64]int)
+
+  // Initialize shard counts to 0
+  for gid, _ := range Groups {
+    shardCounts[gid] = 0
+  }
+
+  // First pass get shard counts
+  for _, gid := range Shards {
+    _, ok := Groups[gid]
+    if ok {
+      shardCounts[gid]++
+    }
+  }
+
+  // Second pass
+  for i, gid := range Shards {
+    // Move shard if in invalid group or over average capacity
+    _, ok := Groups[gid]
+    if !ok || shardCounts[gid] > shardsPerGroup {
+      minGid := int64(1 << 63 - 1)
+      // Find min gid below capacity
+      for newGid, _ := range Groups {
+        if shardCounts[newGid] < shardsPerGroup && newGid < minGid { // Find below capacity group
+          minGid = newGid
+        }
+      }
+      if minGid < int64(1 << 63 - 1) {
+        // Move shard to new group
+        Shards[i] = minGid
+        // Update shard counts
+        shardCounts[gid]--
+        shardCounts[minGid]++
+      }
+      // If none exists, then all groups at average capacity
+    }
+  }
+  return Shards
 }
 
 //

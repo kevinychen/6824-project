@@ -314,7 +314,7 @@ func (kv *ShardKV) Reconfigure() {
       seq := kv.GetMaxSeq()
 
       // Call Start
-      kv.px.Start(seq, op)
+      kv.px.FastStart(seq, op)
 
       decidedOp := kv.PollDecidedValue(seq)
       if decidedOp.ID == op.ID {
@@ -331,7 +331,7 @@ func (kv *ShardKV) SyncUntil(seqNum int) {
     decided, _ := kv.px.Status(kv.horizon)
     if !decided {
       noOp := Op{Type:"Get", Key:"noopID", ID:NoOpID}
-      kv.px.Start(i, noOp)
+      kv.px.SlowStart(i, noOp)
     }
     decidedOp := kv.PollDecidedValue(i)
     kv.localLog[seqNum] = decidedOp
@@ -428,7 +428,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
   for {
     seq := kv.GetMaxSeq()
     // Call Start
-    kv.px.Start(seq, op)
+    kv.px.FastStart(seq, op)
 
     decidedOp := kv.PollDecidedValue(seq)
     if decidedOp.ID == op.ID {
@@ -451,7 +451,7 @@ func (kv *ShardKV) Put(args *PutArgs, reply *PutReply) error {
   for {
     seq := kv.GetMaxSeq()
     // Call Start
-    kv.px.Start(seq, op)
+    kv.px.FastStart(seq, op)
 
     decidedOp := kv.PollDecidedValue(seq)
     if decidedOp.ID == op.ID {

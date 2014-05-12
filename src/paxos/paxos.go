@@ -414,13 +414,13 @@ func (px *Paxos) atomicSequenceNumUpdate(seq int, peer int) {
 }
 
 // Proposer
-func (px *Paxos) doPropose(seq int, v interface{}) {
+func (px *Paxos) doPropose(seq int, v interface{}, fast bool) {
   remainder := seq % LeaderLifetime // seq - remainder is index of last election round
   leaderId := -1 // id of leader
   retry := false // true if skipping the prepare phase failed the first time
 
   // Leader is the winner of the last election round if it finished
-  if px.instances[seq - remainder].Decided {
+  if fast && px.instances[seq - remainder].Decided {
     leaderId = px.instances[seq - remainder].LeaderId
   }
 
@@ -540,14 +540,32 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) Start(seq int, v interface{}) {
+
+// Call px.FastStart if you are actively proposing a value, i.e. not after
+// crash/restart.  FastStart can skip the prepare phase, meaning that if the
+// leader tries to use FastStart after it already proposed a value, the old
+// value can get overwritten.
+func (px *Paxos) FastStart(seq int, v interface{}) {
   px.mu.Lock()
   if seq > px.maxSequenceN {
     px.maxSequenceN = seq
     px.logMax()
   }
+  go px.doPropose(seq, v, true)
   px.mu.Unlock()
-  go px.doPropose(seq, v)
+}
+
+// Call px.SlowStart if you are proposing no ops.  SlowStart will not skip the
+// prepare phase, meaning that after a crash/restart, you should use SlowStart
+// to learn the previously proposed values.
+func (px *Paxos) SlowStart(seq int, v interface{}) {
+  px.mu.Lock()
+  if seq > px.maxSequenceN {
+    px.maxSequenceN = seq
+    px.logMax()
+  }
+  go px.doPropose(seq, v, false)
+  px.mu.Unlock()
 }
 
 //
