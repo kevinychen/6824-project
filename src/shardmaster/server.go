@@ -1,6 +1,7 @@
 package shardmaster
 
 import "net"
+import "reflect"
 import "fmt"
 import "net/rpc"
 import "log"
@@ -32,15 +33,14 @@ type ShardMaster struct {
   unreliable bool // for testing
   px *paxos.Paxos
 
+  id string
+
   configs []Config // indexed by config num
 
   localLog map[int]Op
   openRequests map[string]int
   horizon int
   maxConfigNum int
-
-  paxosLogFile string
-  enc *gob.Encoder
 }
 
 func nrand() int64 {
@@ -54,6 +54,14 @@ func getUniqueKey() string {
   return strconv.FormatInt(nrand(), 10) + ":" + strconv.FormatInt(nrand(), 10)
 }
 
+// PERSISTENCE
+// func (sm *ShardMaster) appendOperation(seq int, op Op) {
+//   sm.enc.Encode(seq)
+//   sm.enc.Encode(op)
+// }
+
+// END PERSISTENCE
+
 type Op struct {
   Type string
   ID string
@@ -64,7 +72,14 @@ type Op struct {
 }
 
 // PERSISTENCE
-func appendPaxosLog(enc *gob.Encoder, op Op, seq int) {
+
+// Call under Lock
+func (sm *ShardMaster) RecoverFromLog() {
+  sm.SyncUntil(sm.px.Max())
+}
+
+/*
+func (sm *ShardMaster) appendPaxosLog(op Op, seq int) {
   enc.Encode(seq)
   enc.Encode(op)
 }
@@ -77,30 +92,18 @@ func rollback(sm *ShardMaster) {
     log.Fatal(err)
   }
   dec := gob.NewDecoder(f)
-  var seq int
-  var op Op
-  dec.Decode(&seq)
-  dec.Decode(&op)
-}
-
-func (sm *ShardMaster) logPaxos() {
-  current := 0
-  f, err := os.OpenFile(sm.paxosLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)  // note: file never closed
-  if err != nil {
-    log.Fatal(err)
-  }
-  sm.enc = gob.NewEncoder(f)
   for {
-    if sm.horizon > current {
-      appendPaxosLog(sm.enc, sm.localLog[current], current)
-      f.Sync()
-      delete(sm.localLog, current)
-      current++
+    var err1, err2 error
+    var seq int
+    var op Op
+    err1 = dec.Decode(&seq)
+    err2 = dec.Decode(&op)
+    if err1 != nil || err2 != nil {
+      break
     }
-    time.Sleep(25 * time.Millisecond)
   }
 }
-
+*/
 // END PERSISTENCE
 
 
@@ -189,20 +192,9 @@ func (sm *ShardMaster) ApplyJoin(GID int64, Servers []string) {
   newCon := copyConfig(sm.configs[sm.maxConfigNum])
   newCon.Num++
   newCon.Groups[GID] = Servers
-  for i, v := range newCon.Shards {
-    if v == 0 {
-      newCon.Shards[i] = GID
-    }
-  }
-  for {
-    minGroup, minCount := getMin(newCon)
-    _, maxCount, lastShard := getMax(newCon)
-    if maxCount - minCount < 2 {
-      break
-    }
-    newCon.Shards[lastShard] = minGroup
-  }
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
   sm.configs = append(sm.configs, newCon)
+  DPrintf("%d JOIN %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
   sm.maxConfigNum++
 }
 
@@ -210,28 +202,9 @@ func (sm *ShardMaster) ApplyLeave(GID int64) {
   newCon := copyConfig(sm.configs[sm.maxConfigNum])
   newCon.Num++
   delete(newCon.Groups, GID)
-  var randomGroup int64
-
-  for k, _ := range newCon.Groups {
-    randomGroup = k
-    break
-  }
-
-  for i, v := range newCon.Shards {
-    if v == GID {
-      newCon.Shards[i] = randomGroup
-    }
-  }
-
-  for {
-    minGroup, minCount := getMin(newCon)
-    _, maxCount, lastShard := getMax(newCon)
-    if maxCount - minCount < 2 {
-      break
-    }
-    newCon.Shards[lastShard] = minGroup
-  }
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
   sm.configs = append(sm.configs, newCon)
+  DPrintf("%d LEAVE %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
   sm.maxConfigNum++
 }
 
@@ -261,25 +234,30 @@ func (sm *ShardMaster) ApplyOp(op Op, seqNum int) {
 
 // Sync method, must be LOCKED
 func (sm *ShardMaster) SyncUntil(seqNum int) {
+  DPrintf("%d Start SYNC: %d\n", sm.me, sm.horizon)
   for i := sm.horizon; i <= seqNum; i++ {
     decided, _ := sm.px.Status(sm.horizon)
     if !decided {
       noOp := Op{"Query", "noopID", 0, make([]string, 0), 0, 0}
-      sm.px.Start(i, noOp)
+      sm.px.SlowStart(i, noOp)
     }
     decidedOp := sm.PollDecidedValue(i)
-    sm.localLog[seqNum] = decidedOp
+//    sm.localLog[seqNum] = decidedOp
+    DPrintf("Seq %d: ", i)
     sm.ApplyOp(decidedOp, i)
   }
-  sm.horizon = seqNum + 1;
+  if sm.horizon <= seqNum + 1 {
+    sm.horizon = seqNum + 1;
+  }
   sm.CallSafeDone()
+  DPrintf("%d End SYNC: %d\n", sm.me, sm.horizon)
 }
 
 func (sm *ShardMaster) ProposeOp(op Op) (Op, int) {
   for !sm.dead {
     sm.mu.Lock()
     seq := sm.px.Max() + 1
-    sm.px.Start(seq, op)
+    sm.px.FastStart(seq, op)
     sm.openRequests[op.ID] = seq
     sm.mu.Unlock()
 
@@ -336,6 +314,8 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
   sm.SyncUntil(seq)
+//  sm.reset()
+
 
   if decidedOp.Num < 0 || decidedOp.Num > sm.maxConfigNum {
     reply.Config = copyConfig(sm.configs[sm.maxConfigNum])
@@ -352,6 +332,118 @@ func (sm *ShardMaster) Kill() {
   sm.px.Kill()
 }
 
+func (sm *ShardMaster) reset() {
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
+
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog()
+}
+
+func (sm *ShardMaster) HardReset() {
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+
+//  fmt.Printf("before %v\n", sm.configs)
+
+  fakeHorizon := sm.horizon
+  fakeMaxConfigNum := sm.maxConfigNum
+
+  fakeLog := make(map[int]Op)
+  for key, value := range sm.localLog {
+    fakeLog[key] = value
+  }
+
+
+  fakeConfigs := make([]Config, 0)
+  for _, value := range sm.configs {
+    fakeConfigs = append(fakeConfigs, value)
+  }
+
+  fakeRequests := make(map[string]int)
+
+  for key, value := range sm.openRequests {
+    fakeRequests[key] = value
+  }
+  
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
+
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog()
+  
+  _ = fakeHorizon
+  _ = fakeMaxConfigNum
+  for i, value := range fakeConfigs {
+//    if v1 != v2 {
+//    if value.Shards != fakeConfigs[i].Shards {
+    if !reflect.DeepEqual(value, sm.configs[i]) {
+      fmt.Printf("%v COMPARE TO %v\n", value, sm.configs[i])
+      log.Fatal("")
+    }
+  }
+//  sm.configs = fakeConfigs
+  sm.localLog = fakeLog
+  sm.openRequests = fakeRequests
+  sm.horizon = fakeHorizon
+  sm.maxConfigNum = fakeMaxConfigNum
+}
+
+// Distribute shards among groups, minimizing shard movement
+func distributeShards(Shards [NShards]int64, Groups map[int64][]string) [NShards]int64 {
+  nGroups := len(Groups)
+  shardsPerGroup := NShards / nGroups
+  if shardsPerGroup < 1 { // at least 1 shard per group
+    shardsPerGroup = 1
+  }
+  shardCounts := make(map[int64]int)
+
+  // Initialize shard counts to 0
+  for gid, _ := range Groups {
+    shardCounts[gid] = 0
+  }
+
+  // First pass get shard counts
+  for _, gid := range Shards {
+    _, ok := Groups[gid]
+    if ok {
+      shardCounts[gid]++
+    }
+  }
+
+  // Second pass
+  for i, gid := range Shards {
+    // Move shard if in invalid group or over average capacity
+    _, ok := Groups[gid]
+    if !ok || shardCounts[gid] > shardsPerGroup {
+      minGid := int64(1 << 63 - 1)
+      // Find min gid below capacity
+      for newGid, _ := range Groups {
+        if shardCounts[newGid] < shardsPerGroup && newGid < minGid { // Find below capacity group
+          minGid = newGid
+        }
+      }
+      if minGid < int64(1 << 63 - 1) {
+        // Move shard to new group
+        Shards[i] = minGid
+        // Update shard counts
+        shardCounts[gid]--
+        shardCounts[minGid]++
+      }
+      // If none exists, then all groups at average capacity
+    }
+  }
+  return Shards
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
@@ -363,6 +455,7 @@ func StartServer(servers []string, me int) *ShardMaster {
 
   sm := new(ShardMaster)
   sm.me = me
+  sm.id = servers[me]
 
   sm.localLog = make(map[int]Op)
   sm.configs = make([]Config, 1)
@@ -376,11 +469,7 @@ func StartServer(servers []string, me int) *ShardMaster {
   rpcs.Register(sm)
 
   sm.px = paxos.Make(servers, me, rpcs)
-
-  sm.paxosLogFile = fmt.Sprintf("logs/sm_paxos_log_%d.log", sm.me)
-  os.Create(sm.paxosLogFile)
-
-  go sm.logPaxos()
+  sm.px.DeleteBarrier = -1
 
   os.Remove(servers[me])
   l, e := net.Listen(Network, servers[me]);

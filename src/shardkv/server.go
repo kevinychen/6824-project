@@ -14,6 +14,7 @@ import "math/rand"
 import "shardmaster"
 import "strconv"
 import "strings"
+import "bytes"
 
 const Debug=1
 
@@ -87,6 +88,20 @@ type Op struct {
   Config shardmaster.Config
   ID string
 }
+
+// OBLIVIOUS REPLICATION
+
+
+func (kv *ShardKV) forwardOperation(seq int, op Op) {
+  key := []byte("a very very very very secret key")
+  oper := OpWithSeq{seq, op}
+  entry := gobEncodeBase64(oper)
+  hash := GetMD5Hash(entry)
+
+  backup := BackupEntry struct {
+  }
+}
+// END OBLIVIOUS REPLICATION
 
 // PERSISTENCE
 func makeReconfigureUndoLog(seq int, config shardmaster.Config) UndoInfo {
@@ -362,7 +377,7 @@ func (kv *ShardKV) Reconfigure() {
       seq := kv.GetMaxSeq()
 
       // Call Start
-      kv.px.Start(seq, op)
+      kv.px.FastStart(seq, op)
 
       decidedOp := kv.PollDecidedValue(seq)
       if decidedOp.ID == op.ID {
@@ -379,7 +394,7 @@ func (kv *ShardKV) SyncUntil(seqNum int) {
     decided, _ := kv.px.Status(kv.horizon)
     if !decided {
       noOp := Op{Type:"Get", Key:"noopID", ID:NoOpID}
-      kv.px.Start(i, noOp)
+      kv.px.SlowStart(i, noOp)
     }
     decidedOp := kv.PollDecidedValue(i)
     kv.localLog[seqNum] = decidedOp
@@ -464,7 +479,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
   for {
     seq := kv.GetMaxSeq()
     // Call Start
-    kv.px.Start(seq, op)
+    kv.px.FastStart(seq, op)
 
     decidedOp := kv.PollDecidedValue(seq)
     if decidedOp.ID == op.ID {
@@ -487,7 +502,7 @@ func (kv *ShardKV) Put(args *PutArgs, reply *PutReply) error {
   for {
     seq := kv.GetMaxSeq()
     // Call Start
-    kv.px.Start(seq, op)
+    kv.px.FastStart(seq, op)
 
     decidedOp := kv.PollDecidedValue(seq)
     if decidedOp.ID == op.ID {
