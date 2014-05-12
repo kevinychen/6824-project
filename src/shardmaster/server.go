@@ -27,6 +27,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 type ShardMaster struct {
   mu sync.Mutex
+  obliviousLock sync.Mutex
   l net.Listener
   me int
   dead bool // for testing
@@ -329,12 +330,18 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 
 // OBLIVIOUS REPLICATION
 
-func (sm *ShardMaster) StoreHash(args *StoreHashArgs, reply *StoreHashReply) {
-
+func (sm *ShardMaster) StoreHash(args *StoreHashArgs, reply *StoreHashReply) error {
+  sm.obliviousLock.Lock()
+  defer sm.obliviousLock.Unlock()
+  sm.obliviousMap[args.Seq] = args.Hash
+  return nil
 }
 
-func (sm *ShardMaster) List(args *ListArgs, reply *ListReply) {
-
+func (sm *ShardMaster) List(args *ListArgs, reply *ListReply) error {
+  sm.obliviousLock.Lock()
+  defer sm.obliviousLock.Unlock()
+  reply.Hashes = sm.obliviousMap
+  return nil
 }
 
 // END OBLIVIOUS REPLICATION
@@ -478,6 +485,8 @@ func StartServer(servers []string, me int) *ShardMaster {
   sm.openRequests = make(map[string]int)
   sm.horizon = 0
   sm.maxConfigNum = 0
+
+  sm.obliviousMap = make(map[int]string)
 
   rpcs := rpc.NewServer()
   rpcs.Register(sm)

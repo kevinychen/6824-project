@@ -72,6 +72,7 @@ type ShardKV struct {
   logFile *os.File
   logFilename string
   enc *gob.Encoder
+  Replica string
 
   // cell storage management
   storage *Storage
@@ -92,15 +93,23 @@ type Op struct {
 // OBLIVIOUS REPLICATION
 
 
-/*func (kv *ShardKV) forwardOperation(seq int, op Op) {
+func (kv *ShardKV) forwardOperation(seq int, op Op) {
+  if kv.Replica == "" {
+    return
+  }
+
   key := []byte("a very very very very secret key")
   oper := OpWithSeq{seq, op}
   entry := gobEncodeBase64(oper)
   hash := GetMD5Hash(entry)
 
-  backup := BackupEntry struct {
-  }
-}*/
+  kv.sm.StoreHash(seq, hash)
+
+}
+
+func (kv *ShardKV) obliviousRecovery() {
+
+}
 // END OBLIVIOUS REPLICATION
 
 // PERSISTENCE
