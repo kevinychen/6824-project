@@ -58,10 +58,10 @@ func (cache *ShardCache) Get(key string) (v string, ok bool) {
   shard := key2shard(key)
   element := cache.table[shard][key]
   if element == nil {
-    return "", false 
+    return "", false
   }
   cache.touch(element)
-  return element.Value.(*entry).value, true 
+  return element.Value.(*entry).value, true
 }
 
 func (cache *ShardCache) Put(key string, value string) {
@@ -185,6 +185,7 @@ func (cache *ShardCache) maintainSize() {
 
 type Storage struct {
   mu sync.Mutex
+  me int
 
   cache *ShardCache
 
@@ -216,13 +217,15 @@ func (st *Storage) connectToDiskDB(url string) {
   if err != nil {
     panic(err)
   }
-  st.db = st.dbSession.DB("db").C("kvstore")
-  st.snapshots = st.dbSession.DB("db").C("snapshots")
+  meStr := strconv.Itoa(st.me)
+  st.db = st.dbSession.DB("db").C("kvstore" + meStr)
+  st.snapshots = st.dbSession.DB("db").C("snapshots" + meStr)
+  st.dedupsnaps = st.dbSession.DB("db").C("dedupsnaps" + meStr)
 }
 
 func (st *Storage) DBClear() {
   st.db.RemoveAll(bson.M{})
-  check, _ := st.snapshots.Find(bson.M{}).Count() 
+  check, _ := st.snapshots.Find(bson.M{}).Count()
   if (check > 0) {
     st.snapshots.RemoveAll(bson.M{})
     st.dedupsnaps.RemoveAll(bson.M{})
@@ -238,8 +241,9 @@ func (st *Storage) Clear() {
   st.CacheClear()
 }
 
-func MakeStorage(capacity uint64, dbURL string) *Storage {
+func MakeStorage(me int, capacity uint64, dbURL string) *Storage {
   st := new(Storage)
+  st.me = me
   st.makeCache(capacity)
   st.connectToDiskDB(dbURL)
   st.writeLog = make(map[int]WriteOp)
@@ -257,14 +261,14 @@ func (st *Storage) Get(key string, shardNum int) string {
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
-      ok = false 
+      ok = false
     } else {
+      st.cache.Put(key, result.Value)
       value = result.Value
     }
   }
   return value
 }
-
 
 func (st *Storage) Put(key string, value string, doHash bool, shardNum int) string {
   prev, ok := st.cache.Get(key)
@@ -306,19 +310,47 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
   return prev
 }
 
+func (st *Storage) PrintSnapshot(confignum int) {
+  results := []SnapshotKV{}
+  index := 0
+  fmt.Printf("Printing Config %v Snapshot\n", confignum)
+  for len(results) >= GrabSize {
+    st.snapshots.Find(bson.M{"cache": true, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    for i := 0; i < len(results); i++ {
+      fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, true)
+    }
+    index++
+  }
+  results = []SnapshotKV{}
+  index = 0
+  for len(results) >= GrabSize {
+    st.snapshots.Find(bson.M{"cache": false, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    for i := 0; i < len(results); i++ {
+      fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, false)
+    }
+    index++
+  }
+  fmt.Printf("Printing Config %v Snapshot Dedup\n", confignum)
+  cresults := []SnapshotDedup{}
+  st.dedupsnaps.Find(bson.M{}).All(&cresults)
+  for i := 0; i < len(cresults); i++ {
+    fmt.Printf("Key: %v, Value: %v, Err: %v, Counter: %v\n", cresults[i].Key, cresults[i].Value, cresults[i].Err, cresults[i].Counter)
+  }
+}
+
 func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
   cachedata := st.cache.KVPairs()
   results := []KVPair{}
   index := 0
-  for len(results) >= 100 {
+  for len(results) >= GrabSize {
     st.db.Find(bson.M{}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
-      st.db.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
+      st.snapshots.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
     }
     index++
   }
   for i := 0; i < len(cachedata); i++ {
-    st.db.Insert(&SnapshotKV{confignum, cachedata[i].Shard, cachedata[i].Key, cachedata[i].Value, true})
+    st.snapshots.Insert(&SnapshotKV{confignum, cachedata[i].Shard, cachedata[i].Key, cachedata[i].Value, true})
   }
   for key, value := range dedup {
     st.dedupsnaps.Insert(&SnapshotDedup{confignum, key, value.Value, value.Err, value.Counter})
@@ -369,7 +401,7 @@ func (st *Storage) writeInBackground() {
       delete(st.writeLog, current)
       current++
     }
-    time.Sleep(25 * time.Millisecond)
+    time.Sleep(250 * time.Millisecond)
   }
 }
 

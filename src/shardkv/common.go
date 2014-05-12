@@ -76,14 +76,26 @@ type GetReply struct {
 
 type PullArgs struct {
   ConfigNum int
-
+  Shard int
+  Cache bool
+  Index int
 }
 
 type PullReply struct {
-  ShardMap map[int]map[string]string
+  ShardMap map[string]string
+  Finished bool
+  Err Err
+}
+
+type GrabArgs struct {
+  ConfigNum int
+}
+
+type GrabReply struct {
   Dedup map[string]ClientReply
   Err Err
 }
+
 
 type PushArgs struct {
   ConfigNum int
