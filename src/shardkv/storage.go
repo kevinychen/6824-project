@@ -289,11 +289,13 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     toBeHashed := prev + value
     hash := strconv.Itoa(int(hash(toBeHashed)))
     st.cache.Put(key, hash)
+    value = hash
     //deleted = st.cache.Put(key, hash)
   } else {
     st.cache.Put(key, value)
     //deleted = st.cache.Put(key, value)
   }
+
 
   st.writeLog[st.applied] = WriteOp{shardNum, key, value, dbok}
   st.applied++
