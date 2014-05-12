@@ -14,7 +14,7 @@ import "math/rand"
 import "shardmaster"
 import "strconv"
 import "strings"
-import "bytes"
+//import "bytes"
 
 const Debug=0
 
@@ -92,7 +92,7 @@ type Op struct {
 // OBLIVIOUS REPLICATION
 
 
-func (kv *ShardKV) forwardOperation(seq int, op Op) {
+/*func (kv *ShardKV) forwardOperation(seq int, op Op) {
   key := []byte("a very very very very secret key")
   oper := OpWithSeq{seq, op}
   entry := gobEncodeBase64(oper)
@@ -100,7 +100,7 @@ func (kv *ShardKV) forwardOperation(seq int, op Op) {
 
   backup := BackupEntry struct {
   }
-}
+}*/
 // END OBLIVIOUS REPLICATION
 
 // PERSISTENCE
