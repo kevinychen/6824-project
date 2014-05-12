@@ -102,6 +102,7 @@ func (kv *ShardKV) forwardOperation(seq int, op Op) {
   oper := OpWithSeq{seq, op}
   entry := gobEncodeBase64(oper)
   hash := GetMD5Hash(entry)
+  _ = key
 
   kv.sm.StoreHash(seq, hash)
 
