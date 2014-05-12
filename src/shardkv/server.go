@@ -14,6 +14,7 @@ import "math/rand"
 import "shardmaster"
 import "strconv"
 import "strings"
+import "oblivious"
 //import "bytes"
 
 const Debug=0
@@ -101,15 +102,47 @@ func (kv *ShardKV) forwardOperation(seq int, op Op) {
   key := []byte("a very very very very secret key")
   oper := OpWithSeq{seq, op}
   entry := gobEncodeBase64(oper)
-  hash := GetMD5Hash(entry)
-  _ = key
+  encryption := encodeBase64(encrypt(key, []byte(entry)))
+  hash := GetMD5Hash(encryption)
 
   kv.sm.StoreHash(seq, hash)
 
+  args := oblivious.LogArgs{hash, entry}
+  reply := oblivious.LogReply{}
+  _ = call(kv.Replica, "ObliviousReplica.Log", &args, &reply)
 }
 
+// CALL UNDER LOCK
 func (kv *ShardKV) obliviousRecovery() {
+  key := []byte("a very very very very secret key")
+  hashMap := kv.sm.List()
+  opMap := make(map[int]OpWithSeq)
 
+  max := 0
+
+  for seq, hash := range hashMap {
+    args := oblivious.LoadArgs{hash}
+    reply := oblivious.LoadReply{}
+    _ = call(kv.Replica, "ObliviousReplica.Load", &args, &reply)
+    decryption := decrypt(key, []byte(reply.Entry))
+
+    result := gobDecodeBase64(decryption)
+    opMap[seq] = result
+    if seq > max {
+      max = seq
+    }
+  }
+
+  kv.resetState()
+
+  for i := kv.horizon; i <= max; i++ {
+    opWithSeq, ok := opMap[i]
+    if !ok {
+      break
+    }
+    kv.ApplyOp(opWithSeq.Operation, i)
+  }
+  kv.horizon = max
 }
 // END OBLIVIOUS REPLICATION
 
@@ -547,6 +580,19 @@ func (kv *ShardKV) Kill() {
   kv.dead = true
   kv.l.Close()
   kv.px.Kill()
+}
+
+func (kv *ShardKV) resetState() {
+  kv.localLog = make(map[int]Op)
+  kv.Counter = 1
+  kv.horizon = 0
+  kv.configNum = -1
+  kv.max = 0
+
+  kv.current = ServerState{make(map[int]map[string]string), make(map[string]ClientReply)}
+  kv.results = make(map[string]ClientReply)
+  kv.configs = make(map[int]shardmaster.Config)
+  kv.configs[-1] = shardmaster.Config{}
 }
 
 //
