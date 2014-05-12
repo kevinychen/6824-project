@@ -345,12 +345,12 @@ func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
   for len(results) >= GrabSize {
     st.db.Find(bson.M{}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
-      st.db.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
+      st.snapshots.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
     }
     index++
   }
   for i := 0; i < len(cachedata); i++ {
-    st.db.Insert(&SnapshotKV{confignum, cachedata[i].Shard, cachedata[i].Key, cachedata[i].Value, true})
+    st.snapshots.Insert(&SnapshotKV{confignum, cachedata[i].Shard, cachedata[i].Key, cachedata[i].Value, true})
   }
   for key, value := range dedup {
     st.dedupsnaps.Insert(&SnapshotDedup{confignum, key, value.Value, value.Err, value.Counter})
@@ -401,7 +401,7 @@ func (st *Storage) writeInBackground() {
       delete(st.writeLog, current)
       current++
     }
-    time.Sleep(25 * time.Millisecond)
+    time.Sleep(250 * time.Millisecond)
   }
 }
 
