@@ -1,7 +1,6 @@
 package shardmaster
 
 import "net"
-import "reflect"
 import "fmt"
 import "net/rpc"
 import "log"
@@ -265,8 +264,8 @@ func (sm *ShardMaster) ProposeOp(op Op) (Op, int) {
 
     sm.mu.Lock()
     if decidedOp.ID == op.ID {
-      sm.mu.Unlock()
       delete(sm.openRequests, op.ID)
+      sm.mu.Unlock()
       return decidedOp, seq
     } else {
       time.Sleep(time.Millisecond)
@@ -348,28 +347,13 @@ func (sm *ShardMaster) HardReset() {
   sm.mu.Lock()
   defer sm.mu.Unlock()
 
-//  fmt.Printf("before %v\n", sm.configs)
-
-  fakeHorizon := sm.horizon
-  fakeMaxConfigNum := sm.maxConfigNum
-
-  fakeLog := make(map[int]Op)
-  for key, value := range sm.localLog {
-    fakeLog[key] = value
-  }
-
-
+  /*
   fakeConfigs := make([]Config, 0)
   for _, value := range sm.configs {
     fakeConfigs = append(fakeConfigs, value)
   }
+  */
 
-  fakeRequests := make(map[string]int)
-
-  for key, value := range sm.openRequests {
-    fakeRequests[key] = value
-  }
-  
   sm.configs = make([]Config, 1)
   sm.configs[0].Groups = map[int64][]string{}
   sm.localLog = make(map[int]Op)
@@ -379,22 +363,15 @@ func (sm *ShardMaster) HardReset() {
   sm.maxConfigNum = 0
 
   sm.RecoverFromLog()
-  
-  _ = fakeHorizon
-  _ = fakeMaxConfigNum
+
+  /*
   for i, value := range fakeConfigs {
-//    if v1 != v2 {
-//    if value.Shards != fakeConfigs[i].Shards {
     if !reflect.DeepEqual(value, sm.configs[i]) {
       fmt.Printf("%v COMPARE TO %v\n", value, sm.configs[i])
       log.Fatal("")
     }
   }
-//  sm.configs = fakeConfigs
-  sm.localLog = fakeLog
-  sm.openRequests = fakeRequests
-  sm.horizon = fakeHorizon
-  sm.maxConfigNum = fakeMaxConfigNum
+  */
 }
 
 // Distribute shards among groups, minimizing shard movement

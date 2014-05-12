@@ -584,6 +584,8 @@ func (px *Paxos) Done(seq int) {
 // this peer.
 //
 func (px *Paxos) Max() int {
+  px.mu.Lock()
+  defer px.mu.Unlock()
   return px.maxSequenceN
 }
 
