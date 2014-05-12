@@ -59,3 +59,18 @@ type QueryArgs struct {
 type QueryReply struct {
   Config Config
 }
+
+type ListArgs struct {
+}
+
+type ListReply struct {
+  Hashes map[int]string
+}
+
+type StoreHashArgs struct {
+  Seq int
+  Hash string
+}
+
+type StoreHashReply struct {
+}

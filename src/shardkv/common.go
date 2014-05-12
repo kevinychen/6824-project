@@ -39,7 +39,7 @@ type SnapshotKV struct {
 type SnapshotDedup struct {
   Config int
   Key string
-  Value string 
+  Value string
   Err Err
   Counter int64
 }
@@ -58,6 +58,7 @@ type PutArgs struct {
 type PutReply struct {
   Err Err
   PreviousValue string   // For PutHash
+  Leader string
 }
 
 type GetArgs struct {
@@ -70,6 +71,7 @@ type GetArgs struct {
 type GetReply struct {
   Err Err
   Value string
+  Leader string
 }
 
 type PullArgs struct {

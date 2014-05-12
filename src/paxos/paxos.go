@@ -38,7 +38,7 @@ import "math/big"
 import "io/ioutil"
 import "strings"
 
-const LeaderLifetime = 10
+const LeaderLifetime = 20
 const Debug=0
 var Network = "unix"
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -97,7 +97,8 @@ type Instance struct {
   Seq int
   Decided bool
   Value interface{}
-  Leader int
+  LeaderId int
+  LeaderName string
   LeaderProposalNum int64
 }
 
@@ -121,6 +122,8 @@ type Paxos struct {
   logPath string
   encoder *gob.Encoder
   decisionFile *os.File
+
+  DeleteBarrier int
 
   // Your data here.
   instances map[int]Instance
@@ -380,11 +383,14 @@ func (px *Paxos) doDecide(args *DecideArgs) *DecideReply {
 
   sequenceNumber := args.SequenceNumber
   value := args.DecidedValue
+  leaderId := args.PeerId
+  proposalNum := args.ProposalNumber
   reply := new(DecideReply)
   reply.MinSequence = px.minSeqNums[px.me]
 
   instance := Instance{Seq: sequenceNumber, Decided: true,
-    Value: value, Leader: args.PeerId, LeaderProposalNum: args.ProposalNumber}
+    Value: value, LeaderId: leaderId, LeaderName: px.peers[leaderId],
+    LeaderProposalNum: proposalNum}
   // Persist decision
   px.logDecision(sequenceNumber, instance)
 
@@ -408,21 +414,21 @@ func (px *Paxos) atomicSequenceNumUpdate(seq int, peer int) {
 }
 
 // Proposer
-func (px *Paxos) doPropose(seq int, v interface{}) {
+func (px *Paxos) doPropose(seq int, v interface{}, fast bool) {
   remainder := seq % LeaderLifetime // seq - remainder is index of last election round
-  leader := -1 // id of leader
+  leaderId := -1 // id of leader
   retry := false // true if skipping the prepare phase failed the first time
 
   // Leader is the winner of the last election round if it finished
-  if px.instances[seq - remainder].Decided {
-    leader = px.instances[seq - remainder].Leader
+  if fast && px.instances[seq - remainder].Decided {
+    leaderId = px.instances[seq - remainder].LeaderId
   }
 
   // While not decided, keep proposing!
   for !px.instances[seq].Decided && px.dead == false {
     proposalNum := px.getProposalNumber()
     // Use old proposal number for leader on the first attempt
-    if px.me == leader && !retry {
+    if px.me == leaderId && !retry {
       proposalNum = px.instances[seq - remainder].LeaderProposalNum
     }
     maxSeenN := int64(0)
@@ -444,7 +450,7 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
      * 2. in an election round
      * 3. past the first attempt
      */
-    if !(px.me == leader) || remainder == 0 || retry {
+    if !(px.me == leaderId) || remainder == 0 || retry {
       for i, _ := range px.peers {
         var ok bool
         reply := new(PrepareReply)
@@ -475,7 +481,7 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
      * 1. leader and first attempt
      * 2. majority of prepares
      */
-    if (px.me == leader && !retry) || prepareCount * 2 > numPeers {
+    if (px.me == leaderId && !retry) || prepareCount * 2 > numPeers {
       acceptCount := 0
       for i, _ := range px.peers {
         var ok bool
@@ -534,14 +540,32 @@ func (px *Paxos) doPropose(seq int, v interface{}) {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) Start(seq int, v interface{}) {
+
+// Call px.FastStart if you are actively proposing a value, i.e. not after
+// crash/restart.  FastStart can skip the prepare phase, meaning that if the
+// leader tries to use FastStart after it already proposed a value, the old
+// value can get overwritten.
+func (px *Paxos) FastStart(seq int, v interface{}) {
   px.mu.Lock()
   if seq > px.maxSequenceN {
     px.maxSequenceN = seq
     px.logMax()
   }
+  go px.doPropose(seq, v, true)
   px.mu.Unlock()
-  go px.doPropose(seq, v)
+}
+
+// Call px.SlowStart if you are proposing no ops.  SlowStart will not skip the
+// prepare phase, meaning that after a crash/restart, you should use SlowStart
+// to learn the previously proposed values.
+func (px *Paxos) SlowStart(seq int, v interface{}) {
+  px.mu.Lock()
+  if seq > px.maxSequenceN {
+    px.maxSequenceN = seq
+    px.logMax()
+  }
+  go px.doPropose(seq, v, false)
+  px.mu.Unlock()
 }
 
 //
@@ -592,7 +616,7 @@ func (px *Paxos) Max() int {
 // instances.
 // 
 func (px *Paxos) minHelper() int {
-  min := (1 << 31) - 1
+  min := px.DeleteBarrier
   for i, _ := range px.peers {
     if px.minSeqNums[i] < min {
       min = px.minSeqNums[i]
@@ -630,6 +654,19 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   return false, nil
 }
 
+// Get the leader for a paxos round
+func (px *Paxos) GetLeader(seq int) string {
+  px.mu.Lock()
+  defer px.mu.Unlock()
+  remainder := seq % LeaderLifetime
+  inst, ok := px.instances[seq - remainder]
+  if ok {
+    if inst.Decided {
+      return inst.LeaderName
+    }
+  }
+  return ""
+}
 
 //
 // tell the peer to shut itself down.
@@ -678,6 +715,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   os.Mkdir("logs", 0700)
   px.logPath = "logs/peer-" + px.UID
   os.Mkdir(px.logPath, 0700)
+  px.DeleteBarrier = (1 << 31) - 1
 
   px.initializeEncoder()
 

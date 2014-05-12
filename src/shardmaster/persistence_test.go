@@ -8,6 +8,7 @@ import "os"
 import "fmt"
 import "math/rand"
 
+/*
 func port(tag string, host int) string {
   s := "/var/tmp/824-"
   s += strconv.Itoa(os.Getuid()) + "/"
@@ -74,8 +75,9 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
     t.Fatalf("max %v too much larger than min %v", max, min)
   }
 }
+*/
 
-func TestBasic(t *testing.T) {
+func TestBasicPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   const nservers = 3
@@ -96,7 +98,7 @@ func TestBasic(t *testing.T) {
     cka[i] = MakeClerk([]string{kvh[i]})
   }
 
-  fmt.Printf("Test: Basic leave/join ...\n")
+  fmt.Printf("Test: Persistent: Basic leave/join ...\n")
 
   cfa := make([]Config, 6)
   cfa[0] = ck.Query(-1)
@@ -106,12 +108,27 @@ func TestBasic(t *testing.T) {
   var gid1 int64 = 1
   ck.Join(gid1, []string{"x", "y", "z"})
   check(t, []int64{gid1}, ck)
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
+
   cfa[1] = ck.Query(-1)
+
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
 
   var gid2 int64 = 2
   ck.Join(gid2, []string{"a", "b", "c"})
   check(t, []int64{gid1,gid2}, ck)
   cfa[2] = ck.Query(-1)
+
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
 
   ck.Join(gid2, []string{"a", "b", "c"})
   check(t, []int64{gid1,gid2}, ck)
@@ -127,6 +144,11 @@ func TestBasic(t *testing.T) {
     t.Fatal("wrong servers for gid %v: %v\n", gid2, sa2)
   }
 
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
+
   ck.Leave(gid1)
   check(t, []int64{gid2}, ck)
   cfa[4] = ck.Query(-1)
@@ -135,9 +157,14 @@ func TestBasic(t *testing.T) {
   check(t, []int64{gid2}, ck)
   cfa[5] = ck.Query(-1)
 
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
+
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Historical queries ...\n")
+  fmt.Printf("Test: Persistent: Historical queries ...\n")
 
   for i := 0; i < len(cfa); i++ {
     c := ck.Query(cfa[i].Num)
@@ -167,7 +194,7 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Move ...\n")
+  fmt.Printf("Test: Persistent: Move ...\n")
   {
     var gid3 int64 = 503
     ck.Join(gid3, []string{"3a", "3b", "3c"})
@@ -207,12 +234,18 @@ func TestBasic(t *testing.T) {
         }
       }
     }
+
+    // RESET
+    sma[0].HardReset()
+    sma[1].HardReset()
+    sma[2].HardReset()
+
     ck.Leave(gid3)
     ck.Leave(gid4)
   }
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Concurrent leave/join ...\n")
+  fmt.Printf("Test: Persistent: Concurrent leave/join ...\n")
 
   const npara = 10
   gids := make([]int64, npara)
@@ -235,22 +268,36 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Min advances after joins ...\n")
+  fmt.Printf("Test: Persistent: Min advances after joins ...\n")
 
+  /*
   for i, sm := range(sma) {
       if sm.px.Min() <= 0 {
           t.Fatalf("Min() for %s did not advance", kvh[i])
       }
   }
+  */
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Minimal transfers after joins ...\n")
+  fmt.Printf("Test: Persistent: Minimal transfers after joins ...\n")
 
   c1 := ck.Query(-1)
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
+
   for i := 0; i < 5; i++ {
     ck.Join(int64(npara+1+i), []string{"a","b","c"})
   }
+  /*
+  // RESET
+  sma[0].HardReset()
+  sma[1].HardReset()
+  sma[2].HardReset()
+  */
+
   c2 := ck.Query(-1)
   for i := int64(1); i <= npara; i++ {
     for j := 0; j < len(c1.Shards); j++ {
@@ -264,7 +311,7 @@ func TestBasic(t *testing.T) {
 
   fmt.Printf("  ... Passed\n")
 
-  fmt.Printf("Test: Minimal transfers after leaves ...\n")
+  fmt.Printf("Test: Persistent: Minimal transfers after leaves ...\n")
 
   for i := 0; i < 5; i++ {
     ck.Leave(int64(npara+1+i))
@@ -283,7 +330,7 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-func TestUnreliable(t *testing.T) {
+func TestUnreliablePersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   const nservers = 3
@@ -308,7 +355,7 @@ func TestUnreliable(t *testing.T) {
     cka[i] = MakeClerk([]string{kvh[i]})
   }
 
-  fmt.Printf("Test: Concurrent leave/join, failure ...\n")
+  fmt.Printf("Test: Persistent: Concurrent leave/join, failure ...\n")
 
   const npara = 20
   gids := make([]int64, npara)
@@ -334,7 +381,7 @@ func TestUnreliable(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-func TestFreshQuery(t *testing.T) {
+func TestFreshQueryPersistent(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   const nservers = 3
@@ -351,7 +398,7 @@ func TestFreshQuery(t *testing.T) {
 
   ck1 := MakeClerk([]string{kvh[1]})
 
-  fmt.Printf("Test: Query() returns latest configuration ...\n")
+  fmt.Printf("Test: Persistent: Query() returns latest configuration ...\n")
 
   portx := kvh[0] + strconv.Itoa(rand.Int())
   if os.Rename(kvh[0], portx) != nil {

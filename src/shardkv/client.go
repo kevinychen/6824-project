@@ -13,10 +13,10 @@ type Clerk struct {
   mu sync.Mutex // one RPC at a time
   sm *shardmaster.Clerk
   config shardmaster.Config
-  
+
   ID string
   Counter int64
-
+  Leaders map[int64]string // gid -> server
 }
 
 func nrand() int64 {
@@ -36,6 +36,7 @@ func MakeClerk(shardmasters []string) *Clerk {
   // You'll have to modify MakeClerk.
   ck.ID = strconv.FormatInt(nrand(), 10)
   ck.Counter = 1
+  ck.Leaders = make(map[int64]string)
   return ck
 }
 
@@ -62,7 +63,7 @@ func call(srv string, rpcname string,
     return false
   }
   defer c.Close()
-    
+
   err := c.Call(rpcname, args, reply)
   if err == nil {
     return true
@@ -110,7 +111,13 @@ func (ck *Clerk) Get(key string) string {
 
     if ok {
       // try each server in the shard's replication group.
-      for _, srv := range servers {
+      for i := -1; i < len(servers); i++ {
+        srv := ck.Leaders[gid] // try the leader first
+        if i == -1 && srv == "" {
+          continue;
+        } else if i >= 0 {
+          srv = servers[i]
+        }
         args := &GetArgs{}
         args.Key = key
         args.ID = id
@@ -118,6 +125,7 @@ func (ck *Clerk) Get(key string) string {
         var reply GetReply
         ok := call(srv, "ShardKV.Get", args, &reply)
         if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+          ck.Leaders[gid] = reply.Leader
           return reply.Value
         }
         if ok && (reply.Err == ErrWrongGroup) {
@@ -153,7 +161,13 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
 
     if ok {
       // try each server in the shard's replication group.
-      for _, srv := range servers {
+      for i := -1; i < len(servers); i++ {
+        srv := ck.Leaders[gid] // try the leader first
+        if i == -1 && srv == "" {
+          continue;
+        } else if i >= 0 {
+          srv = servers[i]
+        }
         args := &PutArgs{}
         args.Key = key
         args.Value = value
@@ -163,6 +177,7 @@ func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
         var reply PutReply
         ok := call(srv, "ShardKV.Put", args, &reply)
         if ok && reply.Err == OK {
+          ck.Leaders[gid] = reply.Leader
           return reply.PreviousValue
         }
         if ok && (reply.Err == ErrWrongGroup) {

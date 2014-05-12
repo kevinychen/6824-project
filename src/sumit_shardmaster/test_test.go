@@ -75,7 +75,7 @@ func check(t *testing.T, groups []int64, ck *Clerk) {
   }
 }
 
-func TestBasic(t *testing.T) {
+func TestBasic(t *testing.T) { 
   runtime.GOMAXPROCS(4)
 
   const nservers = 3
@@ -136,7 +136,7 @@ func TestBasic(t *testing.T) {
   cfa[5] = ck.Query(-1)
 
   fmt.Printf("  ... Passed\n")
-
+  
   fmt.Printf("Test: Historical queries ...\n")
 
   for i := 0; i < len(cfa); i++ {
@@ -145,6 +145,9 @@ func TestBasic(t *testing.T) {
       t.Fatalf("historical Num wrong")
     }
     if c.Shards != cfa[i].Shards {
+      fmt.Println(i)
+      fmt.Println(c.Shards)
+      fmt.Println(cfa[i].Shards)
       t.Fatalf("historical Shards wrong")
     }
     if len(c.Groups) != len(cfa[i].Groups) {
@@ -166,7 +169,7 @@ func TestBasic(t *testing.T) {
   }
 
   fmt.Printf("  ... Passed\n")
-
+  
   fmt.Printf("Test: Move ...\n")
   {
     var gid3 int64 = 503
@@ -211,7 +214,7 @@ func TestBasic(t *testing.T) {
     ck.Leave(gid4)
   }
   fmt.Printf("  ... Passed\n")
-
+   
   fmt.Printf("Test: Concurrent leave/join ...\n")
 
   const npara = 10
@@ -234,16 +237,14 @@ func TestBasic(t *testing.T) {
   check(t, gids, ck)
 
   fmt.Printf("  ... Passed\n")
-
+ 
   fmt.Printf("Test: Min advances after joins ...\n")
 
-  /*
   for i, sm := range(sma) {
       if sm.px.Min() <= 0 {
           t.Fatalf("Min() for %s did not advance", kvh[i])
       }
   }
-  */
 
   fmt.Printf("  ... Passed\n")
 
@@ -283,7 +284,9 @@ func TestBasic(t *testing.T) {
   }
 
   fmt.Printf("  ... Passed\n")
+  
 }
+
 
 func TestUnreliable(t *testing.T) {
   runtime.GOMAXPROCS(4)

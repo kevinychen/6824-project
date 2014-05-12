@@ -1,6 +1,7 @@
 package shardmaster
 
 import "net"
+import "reflect"
 import "fmt"
 import "net/rpc"
 import "log"
@@ -10,361 +11,333 @@ import "os"
 import "syscall"
 import "encoding/gob"
 import "math/rand"
-import "sort"
+import "math/big"
+import crand "crypto/rand"
 import "time"
+import "strconv"
+
+const Debug = 0
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+  if Debug > 0 {
+    log.Printf(format, a...)
+  }
+  return
+}
 
 type ShardMaster struct {
   mu sync.Mutex
-  logLock sync.Mutex
-  execLock sync.Mutex
   l net.Listener
   me int
   dead bool // for testing
   unreliable bool // for testing
   px *paxos.Paxos
 
+  id string
+
   configs []Config // indexed by config num
-  opLog map[int]Op
-  maxOp int
+
+  localLog map[int]Op
+  openRequests map[string]int
+  horizon int
+  maxConfigNum int
+
+  obliviousMap map[int]string
 }
 
+func nrand() int64 {
+  max := big.NewInt(int64(1) << 62)
+  bigx, _ := crand.Int(crand.Reader, max)
+  x := bigx.Int64()
+  return x
+}
+
+func getUniqueKey() string {
+  return strconv.FormatInt(nrand(), 10) + ":" + strconv.FormatInt(nrand(), 10)
+}
+
+// PERSISTENCE
+// func (sm *ShardMaster) appendOperation(seq int, op Op) {
+//   sm.enc.Encode(seq)
+//   sm.enc.Encode(op)
+// }
+
+// END PERSISTENCE
+
 type Op struct {
-  // Your data here.
-  OpType string
+  Type string
+  ID string
   GID int64
   Servers []string
   Shard int
   Num int
 }
 
-func opEquality(op1 Op, op2 Op) bool {
-  if op1.OpType != op2.OpType {
-    return false
+// PERSISTENCE
+
+// Call under Lock
+func (sm *ShardMaster) RecoverFromLog() {
+  sm.SyncUntil(sm.px.Max())
+}
+
+/*
+func (sm *ShardMaster) appendPaxosLog(op Op, seq int) {
+  enc.Encode(seq)
+  enc.Encode(op)
+}
+
+func rollback(sm *ShardMaster) {
+  // This function doesn't do anything; it's just
+  //   a reference for gob decoding.
+  f, err := os.Open(sm.paxosLogFile)
+  if err != nil {
+    log.Fatal(err)
   }
-  if op1.GID != op2.GID {
-    return false
-  }
-  if len(op1.Servers) != len(op2.Servers) {
-    return false
-  }
-  for i := 0; i < len(op1.Servers); i++ {
-    if op1.Servers[i] != op2.Servers[i] {
-        return false
+  dec := gob.NewDecoder(f)
+  for {
+    var err1, err2 error
+    var seq int
+    var op Op
+    err1 = dec.Decode(&seq)
+    err2 = dec.Decode(&op)
+    if err1 != nil || err2 != nil {
+      break
     }
   }
-  if op1.Shard != op2.Shard {
-    return false
+}
+*/
+// END PERSISTENCE
+
+
+// Get Status
+func (sm *ShardMaster) PollDecidedValue(seq int) Op {
+  // Wait for response
+  to := 10 * time.Millisecond
+  for {
+    decided, returnOp := sm.px.Status(seq)
+    if decided {
+      decidedOp := returnOp.(Op)
+      return decidedOp
+    }
+    time.Sleep(to)
+    if to < 10 * time.Second {
+      to *= 2
+    }
   }
-  if op1.Num != op2.Num {
-    return false
+  return Op{"Query", "noopID", 0, make([]string, 0), 0, 0}
+}
+
+func (sm *ShardMaster) CallSafeDone() {
+  minimum := sm.horizon
+  for _, v := range sm.openRequests {
+    if v < minimum {
+      minimum = v
+    }
   }
-  return true
+  sm.px.Done(minimum)
+  _ = sm.px.Min()
+}
+
+func getMin(config Config) (int64, int) {
+  minShards := NShards << 3
+  minGroup := int64(0)
+  for key, _ := range config.Groups {
+    counter := 0
+    for _, v := range config.Shards {
+      if v == key {
+        counter++
+      }
+    }
+    if counter < minShards {
+      minShards = counter
+      minGroup = key
+    }
+  }
+  return minGroup, minShards
+}
+
+func getMax(config Config) (int64, int, int) {
+  maxShards := -1
+  maxGroup := int64(0)
+  lastShard := -1
+  for key, _ := range config.Groups {
+    counter := 0
+    temp := -1
+    for i, v := range config.Shards {
+      if v == key {
+        counter++
+        temp = i
+      }
+    }
+    if counter > maxShards {
+      maxShards = counter
+      maxGroup = key
+      lastShard = temp
+    }
+  }
+  return maxGroup, maxShards, lastShard
+}
+
+func copyConfig(config Config) Config {
+  var newShards [NShards]int64
+  tempConfig := Config{config.Num, newShards, make(map[int64][]string)}
+  for i, v := range config.Shards {
+    tempConfig.Shards[i] = v
+  }
+  for k, v := range config.Groups {
+    tempConfig.Groups[k] = v
+  }
+  return tempConfig
+}
+
+func (sm *ShardMaster) ApplyJoin(GID int64, Servers []string) {
+  newCon := copyConfig(sm.configs[sm.maxConfigNum])
+  newCon.Num++
+  newCon.Groups[GID] = Servers
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
+  sm.configs = append(sm.configs, newCon)
+  DPrintf("%d JOIN %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
+  sm.maxConfigNum++
+}
+
+func (sm *ShardMaster) ApplyLeave(GID int64) {
+  newCon := copyConfig(sm.configs[sm.maxConfigNum])
+  newCon.Num++
+  delete(newCon.Groups, GID)
+  newCon.Shards = distributeShards(newCon.Shards, newCon.Groups)
+  sm.configs = append(sm.configs, newCon)
+  DPrintf("%d LEAVE %d: %d %v\n", sm.me, newCon.Num, GID, newCon.Shards)
+  sm.maxConfigNum++
+}
+
+func (sm *ShardMaster) ApplyMove(Shard int, GID int64) {
+  newCon := copyConfig(sm.configs[sm.maxConfigNum])
+  newCon.Num++
+  newCon.Shards[Shard] = GID
+  sm.configs = append(sm.configs, newCon)
+  sm.maxConfigNum++
+}
+
+func (sm *ShardMaster) ApplyQuery() {
+  // pass
+}
+
+func (sm *ShardMaster) ApplyOp(op Op, seqNum int) {
+  if op.Type == "Join" {
+    sm.ApplyJoin(op.GID, op.Servers)
+  } else if op.Type == "Leave" {
+    sm.ApplyLeave(op.GID)
+  } else if op.Type == "Move" {
+    sm.ApplyMove(op.Shard, op.GID)
+  } else if op.Type == "Query" {
+    sm.ApplyQuery()
+  }
+}
+
+// Sync method, must be LOCKED
+func (sm *ShardMaster) SyncUntil(seqNum int) {
+  DPrintf("%d Start SYNC: %d\n", sm.me, sm.horizon)
+  for i := sm.horizon; i <= seqNum; i++ {
+    decided, _ := sm.px.Status(sm.horizon)
+    if !decided {
+      noOp := Op{"Query", "noopID", 0, make([]string, 0), 0, 0}
+      sm.px.SlowStart(i, noOp)
+    }
+    decidedOp := sm.PollDecidedValue(i)
+//    sm.localLog[seqNum] = decidedOp
+    DPrintf("Seq %d: ", i)
+    sm.ApplyOp(decidedOp, i)
+  }
+  if sm.horizon <= seqNum + 1 {
+    sm.horizon = seqNum + 1;
+  }
+  sm.CallSafeDone()
+  DPrintf("%d End SYNC: %d\n", sm.me, sm.horizon)
+}
+
+func (sm *ShardMaster) ProposeOp(op Op) (Op, int) {
+  for !sm.dead {
+    sm.mu.Lock()
+    seq := sm.px.Max() + 1
+    sm.px.FastStart(seq, op)
+    sm.openRequests[op.ID] = seq
+    sm.mu.Unlock()
+
+    decidedOp := sm.PollDecidedValue(seq)
+
+    sm.mu.Lock()
+    if decidedOp.ID == op.ID {
+      sm.mu.Unlock()
+      delete(sm.openRequests, op.ID)
+      return decidedOp, seq
+    } else {
+      time.Sleep(time.Millisecond)
+      sm.mu.Unlock()
+    }
+  }
+  return Op{}, -1
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
-  // Your code here.
-  op := Op{"join", args.GID, args.Servers, -1, -1}
-  seq := sm.Insert(op)
-  sm.ExecutePrevious(seq, op)
-
+  id := getUniqueKey()
+  op := Op{"Join", id, args.GID, args.Servers, 0, 0}
+  _, seq := sm.ProposeOp(op)
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+  sm.SyncUntil(seq)
   return nil
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
-  op := Op{"leave", args.GID, nil, -1, -1}
-  seq := sm.Insert(op)
-  sm.ExecutePrevious(seq, op)
-
+  id := getUniqueKey()
+  op := Op{"Leave", id, args.GID, make([]string, 0), 0, 0}
+  _, seq := sm.ProposeOp(op)
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+  sm.SyncUntil(seq)
   return nil
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
-  op := Op{"move", args.GID, nil, args.Shard, -1}
-  seq := sm.Insert(op)
-  sm.ExecutePrevious(seq, op)
-
+  id := getUniqueKey()
+  op := Op{"Move", id, args.GID, make([]string, 0), args.Shard, 0}
+  _, seq := sm.ProposeOp(op)
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+  sm.SyncUntil(seq)
   return nil
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
-  // Your code here.
-  op := Op{"query", -1, nil, -1, args.Num}
-  seq := sm.Insert(op)
-  reply.Config = sm.ExecutePrevious(seq, op)
+  id := getUniqueKey()
+  op := Op{"Query", id, 0, make([]string, 0), 0, args.Num}
 
+  decidedOp, seq := sm.ProposeOp(op)
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+  sm.SyncUntil(seq)
+//  sm.reset()
+
+
+  if decidedOp.Num < 0 || decidedOp.Num > sm.maxConfigNum {
+    reply.Config = copyConfig(sm.configs[sm.maxConfigNum])
+  } else {
+    reply.Config = copyConfig(sm.configs[decidedOp.Num])
+  }
   return nil
 }
 
-func (sm *ShardMaster) ExecutePrevious(seq int, currentOp Op) Config {
-    sm.execLock.Lock()
-    defer sm.execLock.Unlock()
+// OBLIVIOUS REPLICATION
 
-    if seq <= sm.maxOp {
-        return sm.Execute(currentOp)
-    } else {
-        var config Config
-        var quickfix int // Attempt at fixing problem with early sequence
-        if sm.maxOp == 0 {
-            quickfix = 0
-        } else {
-            quickfix = sm.maxOp + 1
-        }
-        for i := quickfix; i <= seq; i++ {
-            sm.logLock.Lock()
-            op, alreadyLogged := sm.opLog[i]
-            sm.logLock.Unlock()
-            if !alreadyLogged {
-                decided := false
-                var v interface{}
-                decided, v = sm.px.Status(i)
-                if !decided {
-                    op = sm.PutNOP(i)
-                } else {
-                    op = v.(Op)
-                    sm.logLock.Lock()
-                    sm.opLog[i] = op
-                    sm.logLock.Unlock()
-                }
-            }
-            config = sm.Execute(op)
-        }
-        sm.maxOp = seq
-        // clean up
-        for key, _ := range sm.opLog {
-            if key <= seq {
-                delete(sm.opLog, key)
-            }
-        }
-        sm.px.Done(seq)
-        return config
-    }
+func (sm *ShardMaster) StoreHash(args *StoreHashArgs, reply *StoreHashReply) {
+
 }
 
-func (sm *ShardMaster) Execute(op Op) Config {
-    if op.OpType == "join" {
-        sm.ExecuteJoin(op)
-        return Config{} 
-    } else if op.OpType == "leave" {
-        sm.ExecuteLeave(op)
-        return Config{}
-    } else if op.OpType == "move" {
-        sm.ExecuteMove(op)
-        return Config{}
-    } else if op.OpType == "query" {
-        return sm.ExecuteQuery(op)
-    }
-    return Config{}
+func (sm *ShardMaster) List(args *ListArgs, reply *ListReply) {
+
 }
 
-func copyConfig(config Config) Config {
-    newConfig := Config{}
-    newConfig.Num = config.Num
-    for i,_ := range newConfig.Shards {
-        newConfig.Shards[i] = config.Shards[i]
-    }
-    newConfig.Groups = make(map[int64][]string)
-    for k, v := range config.Groups {
-       newConfig.Groups[k] = v 
-    }
-    return newConfig
-}
-
-func (sm *ShardMaster) ExecuteJoin(op Op) {
-    currentConfig := sm.configs[len(sm.configs) - 1]
-    newConfig := copyConfig(currentConfig)
-    newConfig.Num += 1
-    newConfig.Groups[op.GID] = op.Servers
-
-    // get shard counts
-    counts := make(map[int64]int)
-    for i := 0; i < len(newConfig.Shards); i++ {
-        _, in := counts[newConfig.Shards[i]]
-        if in {
-            counts[newConfig.Shards[i]] += 1
-        } else {
-            counts[newConfig.Shards[i]] = 1
-        }
-    }
-
-    // get number of groups
-    numGroups := len(newConfig.Groups) 
-    //fmt.Println(numGroups)
-
-    myshards := 0
-    for i := 0; i < len(newConfig.Shards); i++ {
-        if newConfig.Shards[i] == 0 {
-            newConfig.Shards[i] = op.GID
-            myshards += 1
-            continue
-        }
-        if myshards > (10 / numGroups) {
-            break
-        }
-        if (counts[newConfig.Shards[i]] - 1) >= (10 / numGroups) {
-            counts[newConfig.Shards[i]] -= 1
-            newConfig.Shards[i] = op.GID
-            myshards += 1
-        }
-    }
-    sm.configs = append(sm.configs, newConfig)
-}
-
-type Int64Slice []int64
-func (a Int64Slice) Len() int {return len(a)}
-func (a Int64Slice) Less(i, j int) bool {return a[i] < a[j]}
-func (a Int64Slice) Swap(i, j int) {a[i], a[j] = a[j], a[i]}
-
-func (arr Int64Slice) Sort() {
-    sort.Sort(arr)
-}
-
-func (sm *ShardMaster) ExecuteLeave(op Op) {
-    currentConfig := sm.configs[len(sm.configs) - 1]
-    newConfig := copyConfig(currentConfig)
-    newConfig.Num += 1
-    delete(newConfig.Groups, op.GID)
-  
-    /*if sm.me == 0 {
-        fmt.Println("Before Leave " + strconv.FormatInt(op.GID, 10))
-        fmt.Println(currentConfig.Shards)
-    }*/
-    // get shard counts
-    counts := make(map[int64]int)
-    for i := 0; i < len(newConfig.Shards); i++ {
-        _, in := counts[newConfig.Shards[i]]
-        if in {
-            counts[newConfig.Shards[i]] += 1
-        } else {
-            counts[newConfig.Shards[i]] = 1
-        }
-    }
-    delete(counts, op.GID)
-
-    // get number of groups
-    numActiveGroups := len(counts) 
-
-    keys := make(Int64Slice, len(newConfig.Groups))
-    b := 0
-    for k, _ := range(newConfig.Groups) {
-        keys[b] = k
-        b++
-    }
-    keys.Sort()
-    for i := 0; i < len(newConfig.Shards); i++ {
-        if newConfig.Shards[i] == op.GID {
-            found := false
-            for _, k := range keys {
-                count, ok := counts[k]
-                if !ok {
-                    newConfig.Shards[i] = k
-                    counts[k] = 1
-                    found = true
-                    break
-                }
-                if count < (10 / numActiveGroups) {
-                    newConfig.Shards[i] = k
-                    counts[k] += 1
-                    found = true
-                    break
-                }
-            }
-            if found {
-                continue 
-            } else {
-                for _, k := range keys {
-                    if counts[k] < (10 / numActiveGroups + 1) {
-                        newConfig.Shards[i] = k
-                        counts[k] += 1
-                        break
-                    }
-                }
-            }
-        }
-    }
-    /*if sm.me == 0 {
-        fmt.Println("After Leave " + strconv.FormatInt(op.GID, 10))
-        fmt.Println(newConfig.Shards)
-    }*/
-    sm.configs = append(sm.configs, newConfig)
-}
-
-func (sm *ShardMaster) ExecuteMove(op Op) {
-    currentConfig := copyConfig(sm.configs[len(sm.configs) - 1]) 
-    currentConfig.Num += 1
-    currentConfig.Shards[op.Shard] = op.GID
-    sm.configs = append(sm.configs, currentConfig)
-}
-
-func (sm *ShardMaster) ExecuteQuery(op Op) Config {
-    if op.Num == -1 || op.Num > (len(sm.configs)) {
-        return sm.configs[len(sm.configs) - 1]
-    }
-    return sm.configs[op.Num]
-}
-
-func (sm *ShardMaster) Insert(op Op) int {
-    for !sm.dead {
-        sm.mu.Lock() // propose one op at a time
-        seq := sm.px.Max() + 1
-        sm.px.Start(seq, op)
-        sm.mu.Unlock()
-        var agreedOp Op
-        var decided bool
-
-        // wait for result
-        to := 10 * time.Millisecond
-        for !sm.dead && seq >= sm.maxOp {
-            var v interface{}
-            decided, v = sm.px.Status(seq)
-            if decided {
-                agreedOp = v.(Op)
-                sm.logLock.Lock()
-                sm.opLog[seq] = agreedOp
-                sm.logLock.Unlock()
-
-                // check if op found in log 
-                if opEquality(op, agreedOp) {
-                    return seq
-                }
-                break
-            }
-            time.Sleep(to)
-            if to < 10 * time.Second {
-                to *= 2
-            }
-        }
-    }
-    return 0
-}
-
-func (sm *ShardMaster) PutNOP(seq int) Op {
-    op := Op{"nop", -1, nil, -1, -1}
-    sm.px.Start(seq, op)
-    var agreedOp Op
-    var decided bool
-
-    // wait for result
-    to := 10 * time.Millisecond
-    for !sm.dead {
-        var v interface{}
-        decided, v = sm.px.Status(seq)
-        if decided {
-            agreedOp = v.(Op)
-            // update log
-            sm.logLock.Lock()
-            sm.opLog[seq] = agreedOp
-            sm.logLock.Unlock()
-
-            return agreedOp
-        }
-
-        time.Sleep(to)
-        if to < 10 * time.Second {
-            to *= 2
-        }
-    }
-    return Op{}
-}
+// END OBLIVIOUS REPLICATION
 
 // please don't change this function.
 func (sm *ShardMaster) Kill() {
@@ -373,26 +346,144 @@ func (sm *ShardMaster) Kill() {
   sm.px.Kill()
 }
 
+func (sm *ShardMaster) reset() {
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
+
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog()
+}
+
+func (sm *ShardMaster) HardReset() {
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+
+//  fmt.Printf("before %v\n", sm.configs)
+
+  fakeHorizon := sm.horizon
+  fakeMaxConfigNum := sm.maxConfigNum
+
+  fakeLog := make(map[int]Op)
+  for key, value := range sm.localLog {
+    fakeLog[key] = value
+  }
+
+
+  fakeConfigs := make([]Config, 0)
+  for _, value := range sm.configs {
+    fakeConfigs = append(fakeConfigs, value)
+  }
+
+  fakeRequests := make(map[string]int)
+
+  for key, value := range sm.openRequests {
+    fakeRequests[key] = value
+  }
+  
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
+
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog()
+  
+  _ = fakeHorizon
+  _ = fakeMaxConfigNum
+  for i, value := range fakeConfigs {
+//    if v1 != v2 {
+//    if value.Shards != fakeConfigs[i].Shards {
+    if !reflect.DeepEqual(value, sm.configs[i]) {
+      fmt.Printf("%v COMPARE TO %v\n", value, sm.configs[i])
+      log.Fatal("")
+    }
+  }
+//  sm.configs = fakeConfigs
+  sm.localLog = fakeLog
+  sm.openRequests = fakeRequests
+  sm.horizon = fakeHorizon
+  sm.maxConfigNum = fakeMaxConfigNum
+}
+
+// Distribute shards among groups, minimizing shard movement
+func distributeShards(Shards [NShards]int64, Groups map[int64][]string) [NShards]int64 {
+  nGroups := len(Groups)
+  shardsPerGroup := NShards / nGroups
+  if shardsPerGroup < 1 { // at least 1 shard per group
+    shardsPerGroup = 1
+  }
+  shardCounts := make(map[int64]int)
+
+  // Initialize shard counts to 0
+  for gid, _ := range Groups {
+    shardCounts[gid] = 0
+  }
+
+  // First pass get shard counts
+  for _, gid := range Shards {
+    _, ok := Groups[gid]
+    if ok {
+      shardCounts[gid]++
+    }
+  }
+
+  // Second pass
+  for i, gid := range Shards {
+    // Move shard if in invalid group or over average capacity
+    _, ok := Groups[gid]
+    if !ok || shardCounts[gid] > shardsPerGroup {
+      minGid := int64(1 << 63 - 1)
+      // Find min gid below capacity
+      for newGid, _ := range Groups {
+        if shardCounts[newGid] < shardsPerGroup && newGid < minGid { // Find below capacity group
+          minGid = newGid
+        }
+      }
+      if minGid < int64(1 << 63 - 1) {
+        // Move shard to new group
+        Shards[i] = minGid
+        // Update shard counts
+        shardCounts[gid]--
+        shardCounts[minGid]++
+      }
+      // If none exists, then all groups at average capacity
+    }
+  }
+  return Shards
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
 // form the fault-tolerant shardmaster service.
 // me is the index of the current server in servers[].
-// 
+//
 func StartServer(servers []string, me int) *ShardMaster {
   gob.Register(Op{})
 
   sm := new(ShardMaster)
   sm.me = me
+  sm.id = servers[me]
 
+  sm.localLog = make(map[int]Op)
   sm.configs = make([]Config, 1)
   sm.configs[0].Groups = map[int64][]string{}
-  sm.opLog = make(map[int]Op)
+
+  sm.openRequests = make(map[string]int)
+  sm.horizon = 0
+  sm.maxConfigNum = 0
 
   rpcs := rpc.NewServer()
   rpcs.Register(sm)
 
   sm.px = paxos.Make(servers, me, rpcs)
+  sm.px.DeleteBarrier = -1
 
   os.Remove(servers[me])
   l, e := net.Listen(Network, servers[me]);
