@@ -41,6 +41,8 @@ type ShardMaster struct {
   openRequests map[string]int
   horizon int
   maxConfigNum int
+
+  obliviousMap map[int]string
 }
 
 func nrand() int64 {
@@ -324,6 +326,18 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   }
   return nil
 }
+
+// OBLIVIOUS REPLICATION
+
+func (sm *ShardMaster) StoreHash(args *StoreHashArgs, reply *StoreHashReply) {
+
+}
+
+func (sm *ShardMaster) List(args *ListArgs, reply *ListReply) {
+
+}
+
+// END OBLIVIOUS REPLICATION
 
 // please don't change this function.
 func (sm *ShardMaster) Kill() {
