@@ -1,6 +1,7 @@
 package shardmaster
 
 import "net"
+import "reflect"
 import "fmt"
 import "net/rpc"
 import "log"
@@ -32,15 +33,14 @@ type ShardMaster struct {
   unreliable bool // for testing
   px *paxos.Paxos
 
+  id string
+
   configs []Config // indexed by config num
 
   localLog map[int]Op
   openRequests map[string]int
   horizon int
   maxConfigNum int
-
-  paxosLogFile string
-  enc *gob.Encoder
 }
 
 func nrand() int64 {
@@ -54,6 +54,14 @@ func getUniqueKey() string {
   return strconv.FormatInt(nrand(), 10) + ":" + strconv.FormatInt(nrand(), 10)
 }
 
+// PERSISTENCE
+// func (sm *ShardMaster) appendOperation(seq int, op Op) {
+//   sm.enc.Encode(seq)
+//   sm.enc.Encode(op)
+// }
+
+// END PERSISTENCE
+
 type Op struct {
   Type string
   ID string
@@ -64,7 +72,16 @@ type Op struct {
 }
 
 // PERSISTENCE
-func appendPaxosLog(enc *gob.Encoder, op Op, seq int) {
+
+// Call under Lock
+func (sm *ShardMaster) RecoverFromLog() {
+  fmt.Printf("ME: %d\n", sm.me)
+  fmt.Println("+++++++++++++++++++++++++++++++++++++++++++++++++")
+  sm.SyncUntil(sm.px.Max())
+}
+
+/*
+func (sm *ShardMaster) appendPaxosLog(op Op, seq int) {
   enc.Encode(seq)
   enc.Encode(op)
 }
@@ -77,30 +94,18 @@ func rollback(sm *ShardMaster) {
     log.Fatal(err)
   }
   dec := gob.NewDecoder(f)
-  var seq int
-  var op Op
-  dec.Decode(&seq)
-  dec.Decode(&op)
-}
-
-func (sm *ShardMaster) logPaxos() {
-  current := 0
-  f, err := os.OpenFile(sm.paxosLogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)  // note: file never closed
-  if err != nil {
-    log.Fatal(err)
-  }
-  sm.enc = gob.NewEncoder(f)
   for {
-    if sm.horizon > current {
-      appendPaxosLog(sm.enc, sm.localLog[current], current)
-      f.Sync()
-      delete(sm.localLog, current)
-      current++
+    var err1, err2 error
+    var seq int
+    var op Op
+    err1 = dec.Decode(&seq)
+    err2 = dec.Decode(&op)
+    if err1 != nil || err2 != nil {
+      break
     }
-    time.Sleep(25 * time.Millisecond)
   }
 }
-
+*/
 // END PERSISTENCE
 
 
@@ -261,6 +266,7 @@ func (sm *ShardMaster) ApplyOp(op Op, seqNum int) {
 
 // Sync method, must be LOCKED
 func (sm *ShardMaster) SyncUntil(seqNum int) {
+  fmt.Printf("ME: %s, NEW SYNC CALL, horizon: %d\n", sm.id, sm.horizon)
   for i := sm.horizon; i <= seqNum; i++ {
     decided, _ := sm.px.Status(sm.horizon)
     if !decided {
@@ -268,11 +274,15 @@ func (sm *ShardMaster) SyncUntil(seqNum int) {
       sm.px.Start(i, noOp)
     }
     decidedOp := sm.PollDecidedValue(i)
-    sm.localLog[seqNum] = decidedOp
+    fmt.Printf("ME: %s, Applying : %d, %v\n", sm.id, i, decidedOp)
+//    sm.localLog[seqNum] = decidedOp
     sm.ApplyOp(decidedOp, i)
   }
-  sm.horizon = seqNum + 1;
+  if sm.horizon <= seqNum + 1 {
+    sm.horizon = seqNum + 1;
+  }
   sm.CallSafeDone()
+  fmt.Printf("ME: %s, END SYNC CALL, horizon: %d\n", sm.id, sm.horizon)
 }
 
 func (sm *ShardMaster) ProposeOp(op Op) (Op, int) {
@@ -336,6 +346,8 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   sm.mu.Lock()
   defer sm.mu.Unlock()
   sm.SyncUntil(seq)
+//  sm.reset()
+
 
   if decidedOp.Num < 0 || decidedOp.Num > sm.maxConfigNum {
     reply.Config = copyConfig(sm.configs[sm.maxConfigNum])
@@ -352,6 +364,100 @@ func (sm *ShardMaster) Kill() {
   sm.px.Kill()
 }
 
+func (sm *ShardMaster) reset() {
+  horizon := sm.horizon
+  maxconf := sm.maxConfigNum
+
+  fmt.Printf("horizon: %d, maxconf: %d\n", horizon, maxconf)
+//  fmt.Printf("%v\n", sm.localLog)
+//  fmt.Printf("%v\n", sm.configs)
+
+  length := len(sm.configs)
+
+//  sm.localLog = make(map[int]Op)
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+
+//  sm.openRequests = make(map[string]int)
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog() 
+  fmt.Printf("ME: %d\n", sm.me)
+  fmt.Println("======================================")
+
+//  fmt.Printf("%v\n", sm.localLog)
+//  fmt.Printf("%v\n", sm.configs)
+
+    fmt.Printf("Interesting, old: %d, new: %d\n", horizon, sm.horizon)
+    fmt.Printf("CONFIGS, old: %d, new: %d\n", maxconf, sm.maxConfigNum)
+    fmt.Printf("LENGTH, old: %d, new: %d\n", length, len(sm.configs))
+/*
+  if horizon != sm.horizon {
+  }
+  if maxconf != sm.maxConfigNum {
+    fmt.Println("WHAT THE HECK MANE WHAT")
+  }
+  */
+}
+
+func (sm *ShardMaster) HardReset() {
+  sm.mu.Lock()
+  defer sm.mu.Unlock()
+
+//  fmt.Printf("before %v\n", sm.configs)
+
+  fakeHorizon := sm.horizon
+  fakeMaxConfigNum := sm.maxConfigNum
+
+  fakeLog := make(map[int]Op)
+  for key, value := range sm.localLog {
+    fakeLog[key] = value
+  }
+
+
+  fakeConfigs := make([]Config, 0)
+  for _, value := range sm.configs {
+    fakeConfigs = append(fakeConfigs, value)
+  }
+
+  fakeRequests := make(map[string]int)
+
+  for key, value := range sm.openRequests {
+    fakeRequests[key] = value
+  }
+  
+  sm.configs = make([]Config, 1)
+  sm.configs[0].Groups = map[int64][]string{}
+  sm.localLog = make(map[int]Op)
+  sm.openRequests = make(map[string]int)
+
+  sm.horizon = 0
+  sm.maxConfigNum = 0
+
+  sm.RecoverFromLog()
+  
+  _ = fakeHorizon
+  _ = fakeMaxConfigNum
+  fmt.Printf("testing\n")
+  for i, value := range fakeConfigs {
+    v1 := fmt.Sprintf("%v", value)
+    v2 := fmt.Sprintf("%v", fakeConfigs[i])
+//    if v1 != v2 {
+//    if value.Shards != fakeConfigs[i].Shards {
+    if reflect.DeepEqual(value, fakeConfigs[i]) {
+      fmt.Printf("%s COMPARE TO %s\n", v1, v2)
+      log.Fatal("")
+    }
+  }
+//  sm.configs = fakeConfigs
+  fmt.Printf("after %v\n", sm.configs)
+  sm.localLog = fakeLog
+  sm.openRequests = fakeRequests
+  sm.horizon = fakeHorizon
+  sm.maxConfigNum = fakeMaxConfigNum
+}
+
 //
 // servers[] contains the ports of the set of
 // servers that will cooperate via Paxos to
@@ -363,6 +469,7 @@ func StartServer(servers []string, me int) *ShardMaster {
 
   sm := new(ShardMaster)
   sm.me = me
+  sm.id = servers[me]
 
   sm.localLog = make(map[int]Op)
   sm.configs = make([]Config, 1)
@@ -376,11 +483,7 @@ func StartServer(servers []string, me int) *ShardMaster {
   rpcs.Register(sm)
 
   sm.px = paxos.Make(servers, me, rpcs)
-
-  sm.paxosLogFile = fmt.Sprintf("logs/sm_paxos_log_%d.log", sm.me)
-  os.Create(sm.paxosLogFile)
-
-  go sm.logPaxos()
+  sm.px.DeleteBarrier = -1
 
   os.Remove(servers[me])
   l, e := net.Listen(Network, servers[me]);

@@ -123,6 +123,8 @@ type Paxos struct {
   encoder *gob.Encoder
   decisionFile *os.File
 
+  DeleteBarrier int
+
   // Your data here.
   instances map[int]Instance
   maxProposalNs map[int]int64
@@ -596,7 +598,7 @@ func (px *Paxos) Max() int {
 // instances.
 // 
 func (px *Paxos) minHelper() int {
-  min := (1 << 31) - 1
+  min := px.DeleteBarrier
   for i, _ := range px.peers {
     if px.minSeqNums[i] < min {
       min = px.minSeqNums[i]
@@ -695,6 +697,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   os.Mkdir("logs", 0700)
   px.logPath = "logs/peer-" + px.UID
   os.Mkdir(px.logPath, 0700)
+  px.DeleteBarrier = (1 << 31) - 1
 
   px.initializeEncoder()
 

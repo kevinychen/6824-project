@@ -14,6 +14,7 @@ import "math/rand"
 import "shardmaster"
 import "strconv"
 import "strings"
+import "bytes"
 
 const Debug=0
 
@@ -84,6 +85,20 @@ type Op struct {
   Config shardmaster.Config
   ID string
 }
+
+// OBLIVIOUS REPLICATION
+
+
+func (kv *ShardKV) forwardOperation(seq int, op Op) {
+  key := []byte("a very very very very secret key")
+  oper := OpWithSeq{seq, op}
+  entry := gobEncodeBase64(oper)
+  hash := GetMD5Hash(entry)
+
+  backup := BackupEntry struct {
+  }
+}
+// END OBLIVIOUS REPLICATION
 
 // PERSISTENCE
 func makeReconfigureUndoLog(seq int, config shardmaster.Config) UndoInfo {
