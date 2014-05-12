@@ -316,7 +316,7 @@ func (st *Storage) PrintSnapshot(confignum int) {
   results := []SnapshotKV{}
   index := 0
   fmt.Printf("Printing Config %v Snapshot\n", confignum)
-  for len(results) >= GrabSize {
+  for len(results) >= GrabSize || index == 0 {
     st.snapshots.Find(bson.M{"cache": true, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
       fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, true)
@@ -325,7 +325,7 @@ func (st *Storage) PrintSnapshot(confignum int) {
   }
   results = []SnapshotKV{}
   index = 0
-  for len(results) >= GrabSize {
+  for len(results) >= GrabSize || index == 0 {
     st.snapshots.Find(bson.M{"cache": false, "config": confignum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
       fmt.Printf("Key: %v, Value: %v, Shard: %v, Cache: %v\n", results[i].Key, results[i].Value, results[i].Shard, false)
@@ -344,7 +344,7 @@ func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
   cachedata := st.cache.KVPairs()
   results := []KVPair{}
   index := 0
-  for len(results) >= GrabSize {
+  for len(results) >= GrabSize || index == 0 {
     st.db.Find(bson.M{}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
     for i := 0; i < len(results); i++ {
       st.snapshots.Insert(&SnapshotKV{confignum, results[i].Shard, results[i].Key, results[i].Value, false})
