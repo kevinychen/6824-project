@@ -1,14 +1,9 @@
 package shardkv
 
 import "testing"
-//import "shardmaster"
-//import "runtime"
 import "strconv"
-//import "os"
-import "time"
+//import "time"
 import "fmt"
-//import "sync"
-//import "math/rand"
 
 func TestCacheBasic(t *testing.T) {
   fmt.Printf("Test: Cache Basic Put/Get\n")
@@ -87,7 +82,7 @@ func TestCacheOverflow(t *testing.T) {
   fmt.Printf(" ... Passed\n")
 }
 
-
+/*
 func TestStorageBasic(t *testing.T) {
   fmt.Printf("Test: Storage Basic Units\n")
 

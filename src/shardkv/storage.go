@@ -47,6 +47,10 @@ func MakeCache(capacity uint64) *ShardCache {
   return cache
 }
 
+func (cache *ShardCache) SetMemory(capacity uint64) {
+  cache.capacity = capacity
+}
+
 func (cache *ShardCache) Size() uint64 {
   return cache.size
 }
@@ -174,6 +178,7 @@ func (cache *ShardCache) add(key string, value string) {
 func (cache *ShardCache) maintainSize() {
   //deleted := list.New()
   for cache.size > cache.capacity {
+    fmt.Println("what")
     delElem := cache.list.Back()
     delEntry := delElem.Value.(*entry)
     shard := key2shard(delEntry.key)
@@ -230,6 +235,10 @@ func (st *Storage) DBClear() {
     st.snapshots.RemoveAll(bson.M{})
     st.dedupsnaps.RemoveAll(bson.M{})
   }
+}
+
+func (st *Storage) SetMemory(capacity uint64) {
+  st.cache.SetMemory(capacity)
 }
 
 func (st *Storage) CacheClear() {
@@ -295,7 +304,6 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     st.cache.Put(key, value)
     //deleted = st.cache.Put(key, value)
   }
-
 
   st.writeLog[st.applied] = WriteOp{shardNum, key, value, dbok}
   st.applied++
@@ -390,6 +398,7 @@ func (st *Storage) writeInBackground() {
   current := 0
   for {
     if st.applied > current {
+      fmt.Println("Writing op: " + strconv.Itoa(current))
       currentWrite := st.writeLog[current]
       var err error
       if !currentWrite.dbok {
@@ -403,7 +412,7 @@ func (st *Storage) writeInBackground() {
       delete(st.writeLog, current)
       current++
     }
-    time.Sleep(250 * time.Millisecond)
+    time.Sleep(25 * time.Millisecond)
   }
 }
 
