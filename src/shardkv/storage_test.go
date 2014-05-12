@@ -148,7 +148,7 @@ func TestStorageSnapshots(t *testing.T) {
 func TestStorageHeavy(t *testing.T) {
   fmt.Printf("Test: All Storage Operations, Heavy\n")
 
-  storage := MakeStorage(10000, "127.0.0.1:27017")
+  storage := MakeStorage(0, 10000, "127.0.0.1:27017")
   storage.Clear()
 
   numPuts := 200
