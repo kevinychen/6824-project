@@ -275,8 +275,9 @@ func (kv *ShardKV) GetMaxSeq() int {
 
 // Locked
 func (kv *ShardKV) Pull(args *PullArgs, reply *PullReply) error {
+  
   desiredConfig := args.ConfigNum
-  DPrintf("Received pull request for shard %v for config %v at group %v machine %v\n", args.Shard, args.ConfigNum, kv.gid, kv.me)
+  //fmt.Printf("Received pull request for shard %v for config %v at group %v machine %v\n", args.Shard, args.ConfigNum, kv.gid, kv.me)
   for {
     kv.configLock.Lock()
     if kv.configNum > desiredConfig {
@@ -286,6 +287,8 @@ func (kv *ShardKV) Pull(args *PullArgs, reply *PullReply) error {
     kv.configLock.Unlock()
     time.Sleep(20 * time.Millisecond)
   }
+  //fmt.Printf("Showing snapshot at group %v machine %v\n", kv.gid, kv.me)
+  //kv.storage.PrintSnapshot(desiredConfig)
   reply.ShardMap, reply.Finished = kv.storage.ReadSnapshotDB(desiredConfig, args.Shard, args.Index, args.Cache)
   reply.Err = OK
   return nil
@@ -332,27 +335,27 @@ func (kv *ShardKV) AskForShard(gid int64, configNum int, shard int) {
 
 
           if callOk && reply.Err == OK {
-            
-            if reply.Finished && cache {
-              cache = false
-            } else if reply.Finished && !cache {
-              finished = true
-            }
-           
             // Pull state over
             for key, value := range reply.ShardMap {
               // not necessary due to storage handling
               // if kv.current.shardMap[shard] == nil {
               //   kv.current.shardMap[shard] = make(map[string]string)
               // }
-              kv.storage.Put(key, value, false, shard)
+              //fmt.Printf("Received Shard %v Key %v Value %v\n", shard, key, value)
+              kv.storage.Put(key, value, false, shard, configNum)
             }
             index++
+            if reply.Finished && cache {
+              cache = false
+              index = 0
+            } else if reply.Finished && !cache {
+              finished = true
+            }
             break
           }
         }
+        time.Sleep(100 * time.Millisecond)
       }
-      time.Sleep(100 * time.Millisecond)
     }
     return
   }
@@ -390,15 +393,16 @@ func (kv *ShardKV) SyncShards(configNum int) {
   prevConfig := kv.configs[configNum - 1]
   newConfig := kv.configs[configNum]
 
-  DPrintf("Pre-Sync Snapshot at Group %v Server %v\n", kv.gid, kv.me)
-  if Debug != 0 {
+  //fmt.Printf("Pre-Sync Snapshot at Group %v Server %v\n", kv.gid, kv.me)
+  if Debug == 1 {
     kv.storage.PrintSnapshot(configNum - 1)
   }
 
   seenGroups := make(map[int64]bool)
   for shard, group := range newConfig.Shards {
     // new shard we don't have
-    if group == kv.gid && group != prevConfig.Shards[shard] {
+    if group == kv.gid && group != prevConfig.Shards[shard] && prevConfig.Shards[shard] != 0 {
+      //fmt.Printf("Grabbing shard %v at Group %v from Group %v\n", shard, kv.gid, prevConfig.Shards[shard])
       // get dedup if not already obtained
       _, ok := seenGroups[prevConfig.Shards[shard]]
       if !ok {
@@ -442,6 +446,7 @@ func (kv *ShardKV) SyncUntil(seqNum int) {
       kv.px.SlowStart(i, noOp)
     }
     decidedOp := kv.PollDecidedValue(i)
+    //fmt.Printf("Decided %v for op %v at group %v machine %v seq %v\n", decidedOp.Type, decidedOp.ID, kv.gid, kv.me, i)
     kv.localLog[seqNum] = decidedOp
     kv.ApplyOp(decidedOp, i)
   }
@@ -500,7 +505,8 @@ func (kv *ShardKV) ApplyOp(op Op, seqNum int) {
   }
 
   if op.Type == "Put" {
-    prev := kv.storage.Put(key, val, doHash, shardNum)
+    //fmt.Printf("Applying put for key %v with value %v at group %v machine %v\n", key, val, kv.gid, kv.me)
+    prev := kv.storage.Put(key, val, doHash, shardNum, kvConfigNum)
     kv.results[id] = ClientReply{Value:prev, Err:OK, Counter:counter}
     kv.current.dedup[clientID] = ClientReply{Value:prev, Counter: counter, Err:OK}
   } else if op.Type == "Reconfigure" {
@@ -545,6 +551,7 @@ func (kv *ShardKV) Put(args *PutArgs, reply *PutReply) error {
   kv.mu.Lock()
   defer kv.mu.Unlock()
 
+  //fmt.Printf("Received put for key %v with value %v at group %v machine %v\n", args.Key, args.Value, kv.gid, kv.me)
   op := Op{Type:"Put", Key:args.Key, ID:args.ID, ConfigNum:args.ConfigNum, Value:args.Value, DoHash:args.DoHash}
 
   for {
@@ -593,6 +600,10 @@ func (kv *ShardKV) resetState() {
   kv.results = make(map[string]ClientReply)
   kv.configs = make(map[int]shardmaster.Config)
   kv.configs[-1] = shardmaster.Config{}
+}
+
+func (kv *ShardKV) SetMemory(capacity uint64) {
+  kv.storage.SetMemory(capacity)
 }
 
 //

@@ -4,6 +4,7 @@ import "testing"
 import "strconv"
 //import "time"
 import "fmt"
+import "math/rand"
 
 func TestCacheBasic(t *testing.T) {
   fmt.Printf("Test: Cache Basic Put/Get\n")
@@ -82,7 +83,7 @@ func TestCacheOverflow(t *testing.T) {
   fmt.Printf(" ... Passed\n")
 }
 
-/*
+
 func TestStorageBasic(t *testing.T) {
   fmt.Printf("Test: Storage Basic Units\n")
 
@@ -91,9 +92,8 @@ func TestStorageBasic(t *testing.T) {
 
   numPuts := 50
   for i := 0; i < numPuts; i++ {
-    storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1)
+    storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1, 1)
   }
-  time.Sleep(20000 * time.Millisecond) // wait for quiesence
   for i := 0; i < numPuts; i++ {
     value := storage.Get(strconv.Itoa(i), 1)
     if value != strconv.Itoa(i*i) {
@@ -104,7 +104,7 @@ func TestStorageBasic(t *testing.T) {
   fmt.Printf(" ... Passed\n")
 }
 
-/*func TestStorageSnapshots(t *testing.T) {
+func TestStorageSnapshots(t *testing.T) {
   fmt.Printf("Test: Storage Snapshotting\n")
 
   storage := MakeStorage(0, 200, "127.0.0.1:27017")
@@ -112,7 +112,7 @@ func TestStorageBasic(t *testing.T) {
 
   numPuts := 50
   for i := 0; i < numPuts; i++ {
-    storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1)
+    storage.Put(strconv.Itoa(i), strconv.Itoa(i*i), false, 1, 1)
   }
 
   configNum := 1
@@ -133,9 +133,6 @@ func TestStorageBasic(t *testing.T) {
     }
   }
 
-  time.Sleep(3000 * time.Millisecond)
-
-  storage.closeDBConnection()
   fmt.Printf(" ... Passed\n")
 }
 
@@ -150,13 +147,11 @@ func TestStorageHeavy(t *testing.T) {
   
   for i := 0; i < numPuts; i++ {
     rando := int(rand.Int31n(15000))
-    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 1)
+    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 1, 1)
   }
   for i := 0; i < numPuts; i++ {
-    storage.Put(strconv.Itoa(7 * i), strconv.Itoa(49 * i * i), false, 1)
+    storage.Put(strconv.Itoa(7 * i), strconv.Itoa(49 * i * i), false, 1, 1)
   }
-
-  time.Sleep(15000 * time.Millisecond)
   
   for i := 0; i < numGets; i++ {
     value := storage.Get(strconv.Itoa(7 * i), 1)
@@ -177,7 +172,8 @@ func TestStorageHeavy(t *testing.T) {
   configNum++
   for i := 0; i < numPuts; i++ {
     rando := int(rand.Int31n(15000))
-    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 2)
+    storage.Put(strconv.Itoa(rando), strconv.Itoa(rando * rando), false, 2, 2)
+    fmt.Println(i)
   }
 
   dedup = make(map[string]ClientReply)
@@ -257,4 +253,4 @@ func TestStorageHeavy(t *testing.T) {
   storage.ReadSnapshotDedup(2)
 
   fmt.Printf(" ... Passed\n")
-}*/
+}

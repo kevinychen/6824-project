@@ -10,39 +10,8 @@ import "fmt"
 import "sync"
 import "math/rand"
 
-func port(tag string, host int) string {
-  s := "/var/tmp/824-"
-  s += strconv.Itoa(os.Getuid()) + "/"
-  os.Mkdir(s, 0777)
-  s += "skv-"
-  s += strconv.Itoa(os.Getpid()) + "-"
-  s += tag + "-"
-  s += strconv.Itoa(host)
-  return s
-}
 
-func NextValue(hprev string, val string) string {
-  h := hash(hprev + val)
-  return strconv.Itoa(int(h))
-}
-
-func mcleanup(sma []*shardmaster.ShardMaster) {
-  for i := 0; i < len(sma); i++ {
-    if sma[i] != nil {
-      sma[i].Kill()
-    }
-  }
-}
-
-func cleanup(sa [][]*ShardKV) {
-  for i := 0; i < len(sa); i++ {
-    for j := 0; j < len(sa[i]); j++ {
-      sa[i][j].Kill()
-    }
-  }
-}
-
-func setup(tag string, unreliable bool) ([]string, []int64, [][]string, [][]*ShardKV, func()) {
+func setupmem(tag string, unreliable bool) ([]string, []int64, [][]string, [][]*ShardKV, func()) {
   runtime.GOMAXPROCS(4)
   
   const nmasters = 3
@@ -55,7 +24,7 @@ func setup(tag string, unreliable bool) ([]string, []int64, [][]string, [][]*Sha
   for i := 0; i < nmasters; i++ {
     sma[i] = shardmaster.StartServer(smh, i)
   }
-
+//
   const ngroups = 3   // replica groups
   const nreplicas = 3 // servers per group
   gids := make([]int64, ngroups)    // each group ID
@@ -71,19 +40,20 @@ func setup(tag string, unreliable bool) ([]string, []int64, [][]string, [][]*Sha
     }
     for j := 0; j < nreplicas; j++ {
       sa[i][j] = StartServer(gids[i], smh, ha[i], j)
+      sa[i][j].SetMemory(200)
+      sa[i][j].storage.Clear()
       sa[i][j].unreliable = unreliable
     }
   }
-
   clean := func() { cleanup(sa) ; mcleanup(sma) }
   return smh, gids, ha, sa, clean
 }
 
-func TestBasic(t *testing.T) {
-  smh, gids, ha, _, clean := setup("basic", false)
+func TestBasicLimitedMemory(t *testing.T) {
+  smh, gids, ha, _, clean := setupmem("basic", false)
   defer clean()
 
-  fmt.Printf("Test: Basic Join/Leave ...\n")
+  fmt.Printf("Test: Basic Join/Leave Limited Memory...\n")
 
   mck := shardmaster.MakeClerk(smh)
   mck.Join(gids[0], ha[0])
@@ -100,6 +70,8 @@ func TestBasic(t *testing.T) {
     t.Fatalf("Get got wrong value")
   }
 
+  fmt.Println("begin")
+
   keys := make([]string, 10)
   vals := make([]string, len(keys))
   for i := 0; i < len(keys); i++ {
@@ -107,13 +79,17 @@ func TestBasic(t *testing.T) {
     vals[i] = strconv.Itoa(rand.Int())
     ck.Put(keys[i], vals[i])
   }
+  //time.Sleep(10 * time.Second) // storage quiescence
 
-  time.Sleep(3000 * time.Millisecond)
+  fmt.Println("second")
+
+  //time.Sleep(10 * time.Second)
   // are keys still there after joins?
   for g := 1; g < len(gids); g++ {
     mck.Join(gids[g], ha[g])
-    time.Sleep(3000 * time.Millisecond)
+    //time.Sleep(30 * time.Second)
     for i := 0; i < len(keys); i++ {
+      //time.Sleep(2 * time.Second)
       v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("joining; wrong value; g=%v k=%v wanted=%v got=%v",
@@ -123,12 +99,14 @@ func TestBasic(t *testing.T) {
       ck.Put(keys[i], vals[i])
     }
   }
+  fmt.Println("joins")
   
   // are keys still there after leaves?
   for g := 0; g < len(gids)-1; g++ {
     mck.Leave(gids[g])
-    time.Sleep(1 * time.Second)
+    //time.Sleep(30 * time.Second)
     for i := 0; i < len(keys); i++ {
+      //time.Sleep(100 * time.Millisecond)
       v := ck.Get(keys[i])
       if v != vals[i] {
         t.Fatalf("leaving; wrong value; g=%v k=%v wanted=%v got=%v",
@@ -142,11 +120,11 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-func TestMove(t *testing.T) {
-  smh, gids, ha, _, clean := setup("move", false)
+func TestMoveLimitedMemory(t *testing.T) {
+  smh, gids, ha, _, clean := setupmem("move", false)
   defer clean()
 
-  fmt.Printf("Test: Shards really move ...\n")
+  fmt.Printf("Test: Shards really move limited memory...\n")
 
   mck := shardmaster.MakeClerk(smh)
   mck.Join(gids[0], ha[0])
@@ -200,11 +178,11 @@ func TestMove(t *testing.T) {
   }
 }
 
-func TestLimp(t *testing.T) {
-  smh, gids, ha, sa, clean := setup("limp", false)
+func TestLimpLimitedMemory(t *testing.T) {
+  smh, gids, ha, sa, clean := setupmem("limp", false)
   defer clean()
 
-  fmt.Printf("Test: Reconfiguration with some dead replicas ...\n")
+  fmt.Printf("Test: Reconfiguration with some dead replicas Limited Memory ...\n")
 
   mck := shardmaster.MakeClerk(smh)
   mck.Join(gids[0], ha[0])
@@ -264,8 +242,8 @@ func TestLimp(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-func doConcurrent(t *testing.T, unreliable bool) {
-  smh, gids, ha, _, clean := setup("conc"+strconv.FormatBool(unreliable), unreliable)
+func doConcurrentMem(t *testing.T, unreliable bool) {
+  smh, gids, ha, _, clean := setupmem("conc"+strconv.FormatBool(unreliable), unreliable)
   defer clean()
 
   mck := shardmaster.MakeClerk(smh)
@@ -314,15 +292,14 @@ func doConcurrent(t *testing.T, unreliable bool) {
   }
 }
 
-func TestConcurrent(t *testing.T) {
-  fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
-  doConcurrent(t, false)
+func TestConcurrentLimitedMemory(t *testing.T) {
+  fmt.Printf("Test: Concurrent Put/Get/Move Limited Memory ...\n")
+  doConcurrentMem(t, false)
   fmt.Printf("  ... Passed\n")
 }
 
-func TestConcurrentUnreliable(t *testing.T) {
-  fmt.Printf("Test: Concurrent Put/Get/Move (unreliable) ...\n")
-  doConcurrent(t, true)
+func TestConcurrentUnreliableLimitedMemory(t *testing.T) {
+  fmt.Printf("Test: Concurrent Put/Get/Move Limited Memory (unreliable) ...\n")
+  doConcurrentMem(t, true)
   fmt.Printf("  ... Passed\n")
 }
-

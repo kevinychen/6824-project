@@ -203,6 +203,13 @@ type Storage struct {
   // logging for background writes
   writeLog map[int]WriteOp
   applied int
+
+  // quiescence
+  quiesced bool
+  pendshards map[int](map[int]int)
+  lows map[int]int
+  pendkeys map[string]int
+  highconfig int
 }
 
 type WriteOp struct {
@@ -210,6 +217,7 @@ type WriteOp struct {
   key string
   value string
   dbok bool
+  config int
 }
 
 func (st *Storage) makeCache(capacity uint64) {
@@ -256,6 +264,13 @@ func MakeStorage(me int, capacity uint64, dbURL string) *Storage {
   st.makeCache(capacity)
   st.connectToDiskDB(dbURL)
   st.writeLog = make(map[int]WriteOp)
+  st.pendshards = make(map[int](map[int]int))
+  st.lows = make(map[int]int)
+  st.pendkeys = make(map[string]int)
+
+  for shard := 0; shard < shardmaster.NShards; shard++ {
+    st.pendshards[shard] = make(map[int]int)
+  }
 
   fmt.Printf("Making storage...\n")
 
@@ -264,9 +279,9 @@ func MakeStorage(me int, capacity uint64, dbURL string) *Storage {
 }
 
 func (st *Storage) Get(key string, shardNum int) string {
-
   value, ok := st.cache.Get(key)
   if !ok {
+    st.QuiesceKey(key)
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
@@ -279,17 +294,25 @@ func (st *Storage) Get(key string, shardNum int) string {
   return value
 }
 
-func (st *Storage) Put(key string, value string, doHash bool, shardNum int) string {
+func (st *Storage) Put(key string, value string, doHash bool, shardNum int, config int) string {
+  if config > st.highconfig {
+    st.highconfig = config
+    for st.pendshards[shardNum][st.lows[shardNum]] <= 0 && st.lows[shardNum] < st.highconfig {
+      delete(st.pendshards[shardNum], st.lows[shardNum])
+      st.lows[shardNum] += 1
+    }
+  }
   prev, ok := st.cache.Get(key)
-  var dbok bool
+  dbok := true
   if !ok {
+    st.QuiesceKey(key)
     result := KVPair{}
     err := st.db.Find(bson.M{"shard": shardNum, "key": key}).One(&result)
     if err != nil {
       dbok = false
     } else {
       prev = result.Value
-      dbok = true
+      //dbok = true
     }
   }
 
@@ -305,7 +328,12 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
     //deleted = st.cache.Put(key, value)
   }
 
-  st.writeLog[st.applied] = WriteOp{shardNum, key, value, dbok}
+  st.quiesced = false
+  st.mu.Lock()
+  st.pendshards[shardNum][config] += 1 
+  st.pendkeys[key] += 1
+  st.mu.Unlock()
+  st.writeLog[st.applied] = WriteOp{shardNum, key, value, dbok, config}
   st.applied++
 
   // insert removed cache entries one at a time into DB, possibly faster if done together?
@@ -321,6 +349,9 @@ func (st *Storage) Put(key string, value string, doHash bool, shardNum int) stri
 }
 
 func (st *Storage) PrintSnapshot(confignum int) {
+  for shardnum := 0; shardnum < shardmaster.NShards; shardnum++ {
+    st.QuiesceShard(shardnum, confignum)
+  }
   results := []SnapshotKV{}
   index := 0
   fmt.Printf("Printing Config %v Snapshot\n", confignum)
@@ -349,6 +380,10 @@ func (st *Storage) PrintSnapshot(confignum int) {
 }
 
 func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
+  for shardnum := 0; shardnum < shardmaster.NShards; shardnum++ {
+    st.QuiesceShard(shardnum, confignum)
+  }
+  
   cachedata := st.cache.KVPairs()
   results := []KVPair{}
   index := 0
@@ -368,13 +403,17 @@ func (st *Storage) CreateSnapshot(confignum int, dedup map[string]ClientReply) {
 }
 
 func (st *Storage) ReadSnapshotDB(confignum int, shardnum int, index int, cache bool) (p map[string]string, fin bool) {
+  
+  st.QuiesceShard(shardnum, confignum)
+  
   piece := make(map[string]string)
   results := []SnapshotKV{}
   if cache {
     st.snapshots.Find(bson.M{"cache": true, "config": confignum, "shard": shardnum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   } else {
-    st.snapshots.Find(bson.M{"cache": false, "config": confignum, "shardnum": shardnum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
+    st.snapshots.Find(bson.M{"cache": false, "config": confignum, "shard": shardnum}).Skip(index * GrabSize).Limit(GrabSize).All(&results)
   }
+  fmt.Printf("Snapshot Read INDEX: %v, Config %v Shard %v Cache %v length: len %v\n", index, confignum, shardnum, cache, len(results))
   for i := 0; i < len(results); i++ {
     piece[results[i].Key] = results[i].Value
   }
@@ -394,11 +433,38 @@ func (st *Storage) ReadSnapshotDedup(confignum int) map[string]ClientReply {
   return dedup
 }
 
+func (st *Storage) Quiesce() {
+  for !st.quiesced {
+
+  }
+}
+
+func (st *Storage) QuiesceKey(key string) {
+  for {
+    st.mu.Lock()
+    remain := st.pendkeys[key]
+    st.mu.Unlock()
+    if remain <= 0 {
+      break
+    }
+  }
+}
+
+func (st *Storage) QuiesceShard(shard int, config int) {
+  for {
+    st.mu.Lock()
+    remain := st.pendshards[shard][config]
+    st.mu.Unlock()
+    if remain <= 0 {
+      break
+    }
+  }
+}
+
 func (st *Storage) writeInBackground() {
   current := 0
   for {
     if st.applied > current {
-      fmt.Println("Writing op: " + strconv.Itoa(current))
       currentWrite := st.writeLog[current]
       var err error
       if !currentWrite.dbok {
@@ -407,10 +473,17 @@ func (st *Storage) writeInBackground() {
         err = st.db.Update(bson.M{"shard": currentWrite.shard, "key": currentWrite.key}, bson.M{"$set": bson.M{"value": currentWrite.value}})
       }
       if err != nil {
-        panic(err)
+        //panic(err)
       }
       delete(st.writeLog, current)
+      st.mu.Lock()
+      st.pendshards[currentWrite.shard][currentWrite.config] -= 1
+      st.pendkeys[currentWrite.key] -= 1
+      //fmt.Printf("Remaining Writes for Shard %v at Config %v until quiescence: %v\n", currentWrite.shard, currentWrite.config, st.pendshards[currentWrite.shard][currentWrite.config])
+      st.mu.Unlock()
       current++
+    } else if !st.quiesced {
+      st.quiesced = true
     }
     time.Sleep(25 * time.Millisecond)
   }
